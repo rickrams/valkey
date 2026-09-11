@@ -3558,6 +3558,8 @@ size_t zsetTypeDeleteExpiredMembers(robj *o, mstime_t now, unsigned long max, ro
 long long zzlGetExpiry(unsigned char *zl, unsigned char *sptr);
 mstime_t zsetNodeGetExpiry(zset *zs, OrderedIndexItem *node);
 void zsetNodeSetExpiry(zset *zs, OrderedIndexItem *node, mstime_t expiry);
+void zsetNodeMigrateExpiry(zset *zs, OrderedIndexItem *old_node, OrderedIndexItem *new_node);
+void zsetDefragNodeExpires(zset *zs, void *(*defragfn)(void *));
 robj *zsetDup(robj *o);
 void genericZpopCommand(client *c,
                         robj **keyv,

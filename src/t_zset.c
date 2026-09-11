@@ -841,8 +841,9 @@ static bool zsetNodeDelExpiry(zset *zs, OrderedIndexItem *node) {
 }
 
 /* Move a node's expiry entry from old_node to new_node (used when a score
- * update repositions a member into a fresh node). No-op if untracked. */
-static void zsetNodeMigrateExpiry(zset *zs, OrderedIndexItem *old_node, OrderedIndexItem *new_node) {
+ * update or an active-defrag relocation moves a member into a fresh node).
+ * No-op if untracked. */
+void zsetNodeMigrateExpiry(zset *zs, OrderedIndexItem *old_node, OrderedIndexItem *new_node) {
     if (zs->node_expires == NULL || old_node == new_node) return;
     zsetNodeExpire probe = {.node = old_node};
     void *found;
@@ -853,6 +854,30 @@ static void zsetNodeMigrateExpiry(zset *zs, OrderedIndexItem *old_node, OrderedI
     e->node = new_node;
     e->expiry = expiry;
     serverAssert(hashtableAdd(zs->node_expires, e));
+}
+
+/* Active-defrag callback for the node_expires side map: relocate each
+ * zsetNodeExpire entry struct. The entry's ->node pointer is kept in sync
+ * separately by zsetNodeMigrateExpiry when the ordered-index node it refers
+ * to is relocated. */
+static void zsetNodeExpireDefragCallback(void *privdata, void *entry_ref) {
+    UNUSED(privdata);
+    zsetNodeExpire **ref = (zsetNodeExpire **)entry_ref;
+    zsetNodeExpire *newentry = activeDefragAlloc(*ref);
+    if (newentry) *ref = newentry;
+}
+
+/* Defrag the node_expires side map's own allocations (bucket tables and entry
+ * structs). Single pass — the map only holds members carrying a TTL. */
+void zsetDefragNodeExpires(zset *zs, void *(*defragfn)(void *)) {
+    if (zs->node_expires == NULL) return;
+    hashtable *newtable = hashtableDefragTables(zs->node_expires, defragfn);
+    if (newtable) zs->node_expires = newtable;
+    unsigned long cursor = 0;
+    do {
+        cursor = hashtableScanDefrag(zs->node_expires, cursor, zsetNodeExpireDefragCallback, NULL, defragfn,
+                                     HASHTABLE_SCAN_EMIT_REF);
+    } while (cursor != 0);
 }
 
 /* ---- encoding-agnostic queries ---- */

@@ -241,11 +241,13 @@ robj *activeDefragStringOb(robj *ob) {
 }
 
 /* Callback for orderedIndexScanDefrag — when a packed member item is
- * relocated, update the companion hashtable's pointer to it. */
+ * relocated, update the companion hashtable's pointer to it and re-key its
+ * entry in the per-member TTL side map (which is keyed by node pointer). */
 static void defragZsetItemCallback(OrderedIndexItem *old_item, OrderedIndexItem *new_item, void *privdata) {
-    hashtable *ht = privdata;
-    bool replaced = hashtableReplaceReallocatedEntry(ht, old_item, new_item);
+    zset *zs = privdata;
+    bool replaced = hashtableReplaceReallocatedEntry(zs->ht, old_item, new_item);
     serverAssert(replaced);
+    zsetNodeMigrateExpiry(zs, old_item, new_item);
     server.stat_active_defrag_scanned++;
 }
 
@@ -392,7 +394,10 @@ static long scanLaterList(robj *ob, unsigned long *cursor, monotime endtime) {
 static void scanLaterZset(robj *ob, unsigned long *cursor) {
     serverAssert(ob->type == OBJ_ZSET && ob->encoding == OBJ_ENCODING_BTREE);
     zset *zs = (zset *)objectGetVal(ob);
-    *cursor = orderedIndexScanDefrag(zs->oi, *cursor, defragZsetItemCallback, zs->ht, activeDefragAlloc);
+    *cursor = orderedIndexScanDefrag(zs->oi, *cursor, defragZsetItemCallback, zs, activeDefragAlloc);
+    /* Once the ordered-index scan completes, defrag the TTL side map's own
+     * allocations (its ->node pointers were kept current during the scan). */
+    if (*cursor == 0) zsetDefragNodeExpires(zs, activeDefragAlloc);
 }
 
 /* Used as hashtable scan callback when all we need is to defrag the hashtable
@@ -447,8 +452,10 @@ static void defragZset(robj *ob) {
     else {
         unsigned long cursor = 0;
         do {
-            cursor = orderedIndexScanDefrag(zs->oi, cursor, defragZsetItemCallback, zs->ht, activeDefragAlloc);
+            cursor = orderedIndexScanDefrag(zs->oi, cursor, defragZsetItemCallback, zs, activeDefragAlloc);
         } while (cursor != 0);
+        /* Defrag the per-member TTL side map's own allocations. */
+        zsetDefragNodeExpires(zs, activeDefragAlloc);
     }
 }
 
