@@ -525,8 +525,16 @@ int dbGenericDeleteWithDictIndex(serverDb *db, robj *key, int async, int flags, 
             debugServerAssert(!kvstoreHashtableDelete(db->expires, dict_index, objectGetVal(key)));
         }
 
-        /* If deleting a hash object, un-track it from the volatile items tracking if it contains volatile items.*/
-        if (objectGetType(val) == OBJ_HASH && hashTypeHasVolatileFields(val)) {
+        /* If deleting a hash or sorted set that carries volatile items (fields
+         * or members with a TTL), un-track it from the volatile items tracking
+         * so no dangling pointer is left for the active-expire cycle. */
+        bool had_volatile;
+        switch (objectGetType(val)) {
+        case OBJ_HASH: had_volatile = hashTypeHasVolatileFields(val); break;
+        case OBJ_ZSET: had_volatile = zsetTypeHasVolatileMembers(val); break;
+        default: had_volatile = false; break;
+        }
+        if (had_volatile) {
             dbUntrackKeyWithVolatileItems(db, val);
         }
 

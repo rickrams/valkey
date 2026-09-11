@@ -3586,7 +3586,8 @@ void zscoreCommand(client *c) {
 static_assert(ZMSCORE_FIND_BATCH_SIZE <= HASHTABLE_FIND_BATCH_MAX_SIZE,
               "ZMSCORE batch size exceeds hashtable batch lookup limit");
 
-static void zmscoreReplyWithHashtable(client *c, hashtable *ht, robj **members, size_t count) {
+static void zmscoreReplyWithHashtable(client *c, zset *zs, robj **members, size_t count) {
+    hashtable *ht = zs->ht;
     const void *keys[ZMSCORE_FIND_BATCH_SIZE];
     void *found_entries[ZMSCORE_FIND_BATCH_SIZE];
     while (count) {
@@ -3610,7 +3611,12 @@ static void zmscoreReplyWithHashtable(client *c, hashtable *ht, robj **members, 
         for (size_t i = 0; i < batch; i++) {
             if ((result >> i) & 1) {
                 OrderedIndexItem *node = found_entries[i];
-                addReplyDouble(c, orderedIndexItemGetScore(node));
+                /* Hide expired-but-unreaped members. */
+                if (zsetExpiryIsVisible(zsetNodeGetExpiry(zs, node))) {
+                    addReplyDouble(c, orderedIndexItemGetScore(node));
+                } else {
+                    addReplyNull(c);
+                }
             } else {
                 addReplyNull(c);
             }
@@ -3641,7 +3647,7 @@ void zmscoreCommand(client *c) {
     /* Prefer hashtable batch lookup to improve performance. */
     if (zobj->encoding == OBJ_ENCODING_BTREE && count > 1) {
         zset *zs = objectGetVal(zobj);
-        zmscoreReplyWithHashtable(c, zs->ht, c->argv + 2, count);
+        zmscoreReplyWithHashtable(c, zs, c->argv + 2, count);
         return;
     }
 
