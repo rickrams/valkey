@@ -166,6 +166,50 @@ proc test_zset_ttl {encoding} {
         }
     }
 
+    test "ZREM of last volatile member untracks the key ($encoding)" {
+        r del z
+        r zadd z 1 a 2 b
+        r zexpire z 100000 MEMBERS 1 a
+        assert_equal 1 [get_keys_with_volatile_items r]
+        # Remove the only volatile member; a non-volatile member remains.
+        r zrem z a
+        assert_equal 0 [get_keys_with_volatile_items r]
+        # The active-expire cycle must not trip over a stale tracked key.
+        after 150
+        assert_equal PONG [r ping] ;# server still alive
+        assert_equal {b} [r zrange z 0 -1]
+    }
+
+    test "ZREMRANGEBYRANK/BYSCORE with volatile members ($encoding)" {
+        foreach cmd {byrank byscore} {
+            r del z
+            r zadd z 1 a 2 b 3 c 4 d
+            r zexpire z 100000 MEMBERS 2 b c
+            assert_equal 1 [get_keys_with_volatile_items r]
+            if {$cmd eq "byrank"} {
+                r zremrangebyrank z 1 2 ;# remove b,c (the volatile ones)
+            } else {
+                r zremrangebyscore z 2 3 ;# remove b,c
+            }
+            assert_equal {a d} [r zrange z 0 -1]
+            # b,c were the only volatile members -> key untracked.
+            assert_equal 0 [get_keys_with_volatile_items r]
+            assert_equal {-1 -1} [r zttl z MEMBERS 2 a d]
+            after 120
+            assert_equal PONG [r ping]
+        }
+    }
+
+    test "ZPOPMIN/ZPOPMAX preserve volatile tracking ($encoding)" {
+        r del z
+        r zadd z 1 a 2 b 3 c
+        r zexpire z 100000 MEMBERS 1 a
+        r zpopmin z ;# pops a (the volatile one)
+        assert_equal 0 [get_keys_with_volatile_items r]
+        after 120
+        assert_equal PONG [r ping]
+    }
+
     r config set zset-max-listpack-entries 128
     r config set zset-max-listpack-value 64
 }
@@ -185,6 +229,21 @@ start_server {tags {"zsetexpire"}} {
         for {set i 0} {$i < 200} {incr i} { r zadd z $i m$i }
         assert_encoding btree z
         assert_range [lindex [r zttl z MEMBERS 1 b] 0] 9900 10000
+    }
+
+    test "COPY preserves member TTLs (listpack and btree)" {
+        foreach {enc entries} {listpack 128 btree 0} {
+            r config set zset-max-listpack-entries $entries
+            r del src dst
+            r zadd src 1 a 2 b 3 c
+            r zexpire src 100000 MEMBERS 1 b
+            assert_encoding $enc src
+            assert_equal 1 [r copy src dst]
+            assert_encoding $enc dst
+            assert_range [lindex [r zttl dst MEMBERS 1 b] 0] 99000 100000
+            assert_equal {-1 -1} [r zttl dst MEMBERS 2 a c]
+        }
+        r config set zset-max-listpack-entries 128
     }
 
     test "keys_with_volatile_items tracking" {

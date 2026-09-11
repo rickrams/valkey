@@ -168,10 +168,19 @@ void fieldExpireScanCallback(void *privdata, void *volaKey, int didx) {
     expireScanData *data = privdata;
     robj *o = volaKey;
     serverAssert(o);
-    serverAssert(objectGetType(o) == OBJ_HASH ? hashTypeHasVolatileFields(o) : zsetTypeHasVolatileMembers(o));
 
     data->has_more_expired_entries = false;
     data->sampled++;
+
+    /* Self-heal: a member-removing command may have dropped the last volatile
+     * item without updating tracking. Rather than trust the invariant, untrack
+     * such keys and skip them (safe to mutate the tracking kvstore mid-scan;
+     * dbReclaimExpiredFields does the same). */
+    bool has_volatile = (objectGetType(o) == OBJ_HASH) ? hashTypeHasVolatileFields(o) : zsetTypeHasVolatileMembers(o);
+    if (!has_volatile) {
+        dbUntrackKeyWithVolatileItems(data->db, o);
+        return;
+    }
 
     if (bgIteration_isEntryInuse(o)) return;
 

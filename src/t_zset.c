@@ -715,6 +715,38 @@ static void zzlUpdateVolatileCount(robj *o, long delta) {
     objectSetVal(o, zl);
 }
 
+/* Recompute the aggregate volatile-count header from scratch by scanning all
+ * members. Used after bulk range deletions (ZREMRANGEBY*) that remove members
+ * without tracking how many carried an expiry. */
+static void zzlRecomputeVolatileCount(robj *o) {
+    serverAssert(objectGetEncoding(o) == OBJ_ENCODING_LISTPACK);
+    unsigned char *zl = objectGetVal(o);
+    long count = 0;
+    unsigned char *eptr = lpFirst(zl);
+    while (eptr) {
+        unsigned char *sptr = lpNext(zl, eptr);
+        if (!sptr) break;
+        if (lpGetMetadata(zl, sptr)) count++;
+        eptr = lpNext(zl, sptr);
+    }
+    unsigned char *head = lpStart(zl);
+    int has_head = lpIsMetadata(head);
+    long cur = has_head ? lpGetMetadataValue(head) : 0;
+    if (cur == count) return;
+    if (has_head) {
+        zl = lpRemoveMetadata(zl, head);
+        objectSetVal(o, zl);
+    }
+    if (count > 0) {
+        unsigned char intenc[LP_MAX_INT_ENCODING_LEN];
+        uint64_t enclen;
+        lpEncodeIntegerGetType(count, intenc, &enclen);
+        zl = objectGetVal(o);
+        zl = lpInsertMetadata(zl, intenc, enclen, lpStart(zl), LP_BEFORE, NULL);
+        objectSetVal(o, zl);
+    }
+}
+
 /* Attach/refresh (or with expiry==EXPIRY_NONE, remove) the expiry metadata of
  * the member whose score entry is 'sptr'. Returns the (possibly reallocated)
  * listpack and updates the aggregate header. */
@@ -1535,6 +1567,9 @@ robj *zsetDup(robj *o) {
             orderedIndexItemGetElement(ln, &ele_ptr, &ele_len);
             OrderedIndexItem *znode = orderedIndexInsert(new_zs->oi, orderedIndexItemGetScore(ln), ele_ptr, ele_len);
             hashtableAdd(new_zs->ht, znode);
+            /* Copy the per-member expiry, if any. */
+            mstime_t expiry = zsetNodeGetExpiry(zs, ln);
+            if (expiry != EXPIRY_NONE) zsetNodeSetExpiry(new_zs, znode, expiry);
         }
     } else {
         serverPanic("Unknown sorted set encoding");
@@ -1742,6 +1777,8 @@ void zremCommand(client *c) {
 
     if ((zobj = lookupKeyWriteOrReply(c, key, shared.czero)) == NULL || checkType(c, zobj, OBJ_ZSET)) return;
 
+    bool had_volatile = zsetTypeHasVolatileMembers(zobj);
+
     if (zobj->encoding == OBJ_ENCODING_BTREE) hashtablePauseAutoShrink(((zset *)objectGetVal(zobj))->ht);
     for (j = 2; j < c->argc; j++) {
         if (zsetDel(zobj, objectGetVal(c->argv[j]))) deleted++;
@@ -1752,6 +1789,10 @@ void zremCommand(client *c) {
         }
     }
     if (!keyremoved && zobj->encoding == OBJ_ENCODING_BTREE) hashtableResumeAutoShrink(((zset *)objectGetVal(zobj))->ht);
+
+    /* If the removed members carried TTLs, refresh volatile-items tracking so
+     * the key is untracked once its last volatile member is gone. */
+    if (had_volatile && !keyremoved && deleted) dbUpdateObjectWithVolatileItemsTracking(c->db, zobj);
 
     if (deleted) {
         notifyKeyspaceEvent(NOTIFY_ZSET, "zrem", key, c->db->id);
@@ -1770,12 +1811,15 @@ typedef enum {
 } zrange_type;
 
 /* Callback for orderedIndexDeleteRangeBy* — removes the item from the hashtable
- * and frees it. The callback receives ownership per the API contract. */
+ * (and its per-member expiry) and frees it. The callback receives ownership
+ * per the API contract. */
 static void zsetIndexDeleteCallback(const OrderedIndexItem *item, void *privdata) {
-    hashtable *ht = privdata;
+    zset *zs = privdata;
+    /* Drop any per-member expiry before the node is freed. */
+    zsetNodeDelExpiry(zs, (OrderedIndexItem *)item);
     /* The packed item is the hashtable entry — pass it directly as the key.
      * zsetExtractElement sees it's unmarked and extracts element from offset 8. */
-    hashtableDelete(ht, (sds)item);
+    hashtableDelete(zs->ht, (sds)item);
 }
 
 /* Implements ZREMRANGEBYRANK, ZREMRANGEBYSCORE, ZREMRANGEBYLEX commands. */
@@ -1814,6 +1858,8 @@ void zremrangeGenericCommand(client *c, zrange_type rangetype) {
     /* Step 2: Lookup & range sanity checks if needed. */
     if ((zobj = lookupKeyWriteOrReply(c, key, shared.czero)) == NULL || checkType(c, zobj, OBJ_ZSET)) goto cleanup;
 
+    bool had_volatile = zsetTypeHasVolatileMembers(zobj);
+
     if (rangetype == ZRANGE_RANK) {
         /* Sanitize indexes. */
         llen = zsetLength(zobj);
@@ -1847,9 +1893,9 @@ void zremrangeGenericCommand(client *c, zrange_type rangetype) {
         hashtablePauseAutoShrink(zs->ht);
         switch (rangetype) {
         case ZRANGE_AUTO:
-        case ZRANGE_RANK: deleted = orderedIndexDeleteRangeByIndex(zs->oi, start, end, zsetIndexDeleteCallback, zs->ht); break;
-        case ZRANGE_SCORE: deleted = orderedIndexDeleteRangeByScore(zs->oi, range.min, range.max, range.minex, range.maxex, zsetIndexDeleteCallback, zs->ht); break;
-        case ZRANGE_LEX: deleted = orderedIndexDeleteRangeByLex(zs->oi, lexrange.min, lexrange.max, lexrange.minex, lexrange.maxex, zsetIndexDeleteCallback, zs->ht); break;
+        case ZRANGE_RANK: deleted = orderedIndexDeleteRangeByIndex(zs->oi, start, end, zsetIndexDeleteCallback, zs); break;
+        case ZRANGE_SCORE: deleted = orderedIndexDeleteRangeByScore(zs->oi, range.min, range.max, range.minex, range.maxex, zsetIndexDeleteCallback, zs); break;
+        case ZRANGE_LEX: deleted = orderedIndexDeleteRangeByLex(zs->oi, lexrange.min, lexrange.max, lexrange.minex, lexrange.maxex, zsetIndexDeleteCallback, zs); break;
         }
         hashtableResumeAutoShrink(zs->ht);
         if (hashtableSize(zs->ht) == 0) {
@@ -1858,6 +1904,15 @@ void zremrangeGenericCommand(client *c, zrange_type rangetype) {
         }
     } else {
         serverPanic("Unknown sorted set encoding");
+    }
+
+    /* If any removed members carried TTLs, fix up volatile accounting: the
+     * listpack aggregate header isn't maintained by the bulk delete, and the
+     * key must be untracked once its last volatile member is gone. (btree
+     * per-member expiries were cleared in zsetIndexDeleteCallback.) */
+    if (had_volatile && !keyremoved && deleted) {
+        if (zobj->encoding == OBJ_ENCODING_LISTPACK) zzlRecomputeVolatileCount(zobj);
+        dbUpdateObjectWithVolatileItemsTracking(c->db, zobj);
     }
 
     /* Step 4: Notifications and reply. */
@@ -3872,6 +3927,10 @@ void genericZpopCommand(client *c,
 
         dbDelete(c->db, key);
         notifyKeyspaceEvent(NOTIFY_GENERIC, "del", key, c->db->id);
+    } else {
+        /* Popped members may have carried TTLs; refresh volatile tracking so
+         * the key is untracked once its last volatile member is popped. */
+        dbUpdateObjectWithVolatileItemsTracking(c->db, zobj);
     }
     signalModifiedKey(c, c->db, key);
 
