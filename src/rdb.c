@@ -758,6 +758,13 @@ int rdbGetObjectType(robj *o, int rdbver) {
         else
             serverPanic("Unknown set encoding");
     case OBJ_ZSET:
+        if (zsetTypeHasVolatileMembers(o)) {
+            /* Member TTLs need a TTL-capable RDB type: ZSET_3 triplets for
+             * RDB 80 (9.0) and newer targets, regardless of the in-memory
+             * encoding; older targets can't store them. */
+            if (rdbver >= 80) return RDB_TYPE_ZSET_3;
+            return -1; /* can't be stored in old RDB */
+        }
         if (objectGetEncoding(o) == OBJ_ENCODING_LISTPACK)
             return RDB_TYPE_ZSET_LISTPACK;
         else if (objectGetEncoding(o) == OBJ_ENCODING_BTREE)
@@ -972,13 +979,41 @@ ssize_t rdbSaveObject(rio *rdb, robj *o, robj *key, int dbid, unsigned char rdbt
         }
     } else if (objectGetType(o) == OBJ_ZSET) {
         /* Save a sorted set value */
-        if (objectGetEncoding(o) == OBJ_ENCODING_LISTPACK) {
+        if (objectGetEncoding(o) == OBJ_ENCODING_LISTPACK && rdbtype == RDB_TYPE_ZSET_3) {
+            /* A listpack zset with member TTLs: write member/score/expiry
+             * triplets without converting the in-memory object. */
+            unsigned char *zl = objectGetVal(o);
+            unsigned char ele_intbuf[LP_INTBUF_SIZE];
+
+            if ((n = rdbSaveLen(rdb, zsetLength(o))) == -1) return -1;
+            nwritten += n;
+
+            unsigned char *eptr = lpFirst(zl);
+            while (eptr) {
+                int64_t elen;
+                unsigned char *ele = lpGet(eptr, &elen, ele_intbuf);
+                unsigned char *sptr = lpNext(zl, eptr);
+                serverAssert(sptr != NULL);
+                double score = zzlGetScore(sptr);
+                long long expiry = zzlGetExpiry(zl, sptr);
+
+                if ((n = rdbSaveRawString(rdb, ele, elen)) == -1) return -1;
+                nwritten += n;
+                if ((n = rdbSaveBinaryDoubleValue(rdb, score)) == -1) return -1;
+                nwritten += n;
+                if ((n = rdbSaveMillisecondTime(rdb, expiry)) == -1) return -1;
+                nwritten += n;
+
+                eptr = lpNext(zl, sptr);
+            }
+        } else if (objectGetEncoding(o) == OBJ_ENCODING_LISTPACK) {
             size_t l = lpBytes((unsigned char *)objectGetVal(o));
 
             if ((n = rdbSaveRawString(rdb, objectGetVal(o), l)) == -1) return -1;
             nwritten += n;
         } else if (objectGetEncoding(o) == OBJ_ENCODING_BTREE) {
             zset *zs = objectGetVal(o);
+            bool add_expiry = (rdbtype == RDB_TYPE_ZSET_3);
 
             if ((n = rdbSaveLen(rdb, orderedIndexLength(zs->oi))) == -1) return -1;
             nwritten += n;
@@ -1002,6 +1037,11 @@ ssize_t rdbSaveObject(rio *rdb, robj *o, robj *key, int dbid, unsigned char rdbt
                 nwritten += n;
                 if ((n = rdbSaveBinaryDoubleValue(rdb, orderedIndexItemGetScore(item))) == -1) return -1;
                 nwritten += n;
+                if (add_expiry) {
+                    long long expiry = zsetNodeGetExpiry(zs, item);
+                    if ((n = rdbSaveMillisecondTime(rdb, expiry)) == -1) return -1;
+                    nwritten += n;
+                }
             }
         } else {
             serverPanic("Unknown sorted set encoding");
@@ -2262,6 +2302,92 @@ robj *rdbLoadObject(int rdbtype, rio *rdb, sds key, int dbid, int *error, int rd
         }
 
         /* Convert *after* loading, since sorted sets are not stored ordered. */
+        if (zsetLength(o) <= server.zset_max_listpack_entries && maxelelen <= server.zset_max_listpack_value &&
+            lpSafeToAdd(NULL, totelelen)) {
+            zsetConvert(o, OBJ_ENCODING_LISTPACK);
+        }
+    } else if (rdbtype == RDB_TYPE_ZSET_3) {
+        /* Sorted set with per-member expiration: member/score/expiry triplets.
+         * Build the btree encoding first (carrying expiries in the side map),
+         * then convert to listpack if small enough (the conversion moves the
+         * expiries into listpack metadata). */
+        uint64_t zsetlen;
+        size_t maxelelen = 0, totelelen = 0;
+        zset *zs;
+
+        if ((zsetlen = rdbLoadLen(rdb, NULL)) == RDB_LENERR) return NULL;
+        if (zsetlen == 0) goto emptykey;
+
+        o = createZsetObject();
+        zs = objectGetVal(o);
+
+        if (!hashtableTryExpand(zs->ht, zsetlen)) {
+            rdbReportCorruptRDB("OOM in hashtableTryExpand %llu", (unsigned long long)zsetlen);
+            decrRefCount(o);
+            return NULL;
+        }
+
+        while (zsetlen--) {
+            sds sdsele;
+            double score;
+            OrderedIndexItem *znode;
+
+            if ((sdsele = rdbGenericLoadStringObject(rdb, RDB_LOAD_SDS, NULL)) == NULL) {
+                decrRefCount(o);
+                return NULL;
+            }
+            if (rdbLoadBinaryDoubleValue(rdb, &score) == -1) {
+                decrRefCount(o);
+                sdsfree(sdsele);
+                return NULL;
+            }
+            if (isnan(score)) {
+                rdbReportCorruptRDB("Zset with NAN score detected");
+                decrRefCount(o);
+                sdsfree(sdsele);
+                return NULL;
+            }
+            long long itemexpiry = rdbLoadMillisecondTime(rdb, RDB_VERSION);
+            if (itemexpiry < EXPIRY_NONE || rioGetReadError(rdb)) {
+                decrRefCount(o);
+                sdsfree(sdsele);
+                return NULL;
+            }
+
+            /* On a primary loading a non-preamble RDB, drop members already
+             * expired relative to 'now', propagating ZREM to replicas. */
+            if (iAmPrimary() && !(rdbflags & RDBFLAGS_AOF_PREAMBLE) && now != 0 && itemexpiry != EXPIRY_NONE &&
+                itemexpiry < now) {
+                if ((rdbflags & RDBFLAGS_FEED_REPL) && server.repl_backlog) {
+                    robj keyobj, memberobj;
+                    initStaticStringObject(keyobj, key);
+                    initStaticStringObject(memberobj, sdsele);
+                    robj *argv[3];
+                    argv[0] = shared.zrem;
+                    argv[1] = &keyobj;
+                    argv[2] = &memberobj;
+                    replicationFeedReplicas(dbid, argv, 3);
+                }
+                sdsfree(sdsele);
+                continue;
+            }
+
+            if (sdslen(sdsele) > maxelelen) maxelelen = sdslen(sdsele);
+            totelelen += sdslen(sdsele);
+
+            znode = orderedIndexInsert(zs->oi, score, sdsele, sdslen(sdsele));
+            sdsfree(sdsele);
+            if (!hashtableAdd(zs->ht, znode)) {
+                rdbReportCorruptRDB("Duplicate zset fields detected");
+                decrRefCount(o);
+                return NULL;
+            }
+            if (itemexpiry != EXPIRY_NONE) zsetNodeSetExpiry(zs, znode, itemexpiry);
+        }
+
+        if (zsetLength(o) == 0) goto emptykey;
+
+        /* Convert to listpack if small enough (carries expiries into metadata). */
         if (zsetLength(o) <= server.zset_max_listpack_entries && maxelelen <= server.zset_max_listpack_value &&
             lpSafeToAdd(NULL, totelelen)) {
             zsetConvert(o, OBJ_ENCODING_LISTPACK);

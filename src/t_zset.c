@@ -684,7 +684,7 @@ static inline bool zsetExpiryIsVisible(long long expiry) {
 /* Expiry of the listpack member whose score entry is 'sptr': the integer
  * payload of the score entry's trailing metadata entry, or EXPIRY_NONE when
  * the member carries none. Purely a read of what is stored. */
-static long long zzlGetExpiry(unsigned char *zl, unsigned char *sptr) {
+long long zzlGetExpiry(unsigned char *zl, unsigned char *sptr) {
     unsigned char *metadata_ptr = lpGetMetadata(zl, sptr);
     return metadata_ptr ? lpGetMetadataValue(metadata_ptr) : EXPIRY_NONE;
 }
@@ -803,7 +803,7 @@ hashtableType zsetNodeExpiresHashtableType = {
 };
 
 /* Absolute expiry of a btree node, or EXPIRY_NONE if the node has none. */
-static mstime_t zsetNodeGetExpiry(zset *zs, OrderedIndexItem *node) {
+mstime_t zsetNodeGetExpiry(zset *zs, OrderedIndexItem *node) {
     if (zs->node_expires == NULL) return EXPIRY_NONE;
     zsetNodeExpire probe = {.node = node};
     void *found;
@@ -812,7 +812,7 @@ static mstime_t zsetNodeGetExpiry(zset *zs, OrderedIndexItem *node) {
 }
 
 /* Set/refresh the expiry of a btree node (expiry != EXPIRY_NONE). */
-static void zsetNodeSetExpiry(zset *zs, OrderedIndexItem *node, mstime_t expiry) {
+void zsetNodeSetExpiry(zset *zs, OrderedIndexItem *node, mstime_t expiry) {
     serverAssert(expiry != EXPIRY_NONE);
     if (zs->node_expires == NULL) zs->node_expires = hashtableCreate(&zsetNodeExpiresHashtableType);
     zsetNodeExpire probe = {.node = node};

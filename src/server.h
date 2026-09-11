@@ -1545,6 +1545,7 @@ struct sharedObjectsStruct {
 
 /* OrderedIndex - full definition in ordered_index.h */
 typedef struct OrderedIndex OrderedIndex;
+typedef struct OrderedIndexItem OrderedIndexItem;
 
 typedef struct zset {
     hashtable *ht;
@@ -3554,6 +3555,9 @@ int zsetDel(robj *zobj, sds ele);
 bool zsetTypeHasVolatileMembers(robj *o);
 int zsetTypeGetExpiry(robj *o, sds member, mstime_t *expiry);
 size_t zsetTypeDeleteExpiredMembers(robj *o, mstime_t now, unsigned long max, robj **out_members);
+long long zzlGetExpiry(unsigned char *zl, unsigned char *sptr);
+mstime_t zsetNodeGetExpiry(zset *zs, OrderedIndexItem *node);
+void zsetNodeSetExpiry(zset *zs, OrderedIndexItem *node, mstime_t expiry);
 robj *zsetDup(robj *o);
 void genericZpopCommand(client *c,
                         robj **keyv,
