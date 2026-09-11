@@ -330,6 +330,30 @@ start_server {tags {"zsetexpire needs:debug external:skip"} overrides {save ""}}
             assert_equal 1 [get_keys_with_volatile_items r]
         }
     }
+
+    foreach preamble {yes no} {
+        foreach {enc entries} {listpack 128 btree 0} {
+            test "AOF rewrite preserves member TTLs (preamble=$preamble, $enc)" {
+                r config set zset-max-listpack-entries $entries
+                r config set appendonly yes
+                r config set aof-use-rdb-preamble $preamble
+                waitForBgrewriteaof r
+                r flushall
+                r zadd z 1 a 2 b 3 c
+                r zpexpireat z 99999999999999 MEMBERS 1 b ;# far future
+                r zexpire z 100000 MEMBERS 1 c
+                assert_encoding $enc z
+                r bgrewriteaof
+                waitForBgrewriteaof r
+                r debug loadaof
+                assert_equal 3 [r zcard z]
+                assert_equal {-1} [r zttl z MEMBERS 1 a]
+                assert_equal {99999999999999} [r zpexpiretime z MEMBERS 1 b]
+                assert_range [lindex [r zttl z MEMBERS 1 c] 0] 99000 100000
+                r config set appendonly no
+            }
+        }
+    }
     r config set zset-max-listpack-entries 128
 }
 

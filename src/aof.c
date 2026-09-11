@@ -1993,6 +1993,18 @@ int rewriteSetObject(rio *r, robj *key, robj *o) {
 
 /* Emit the commands needed to rebuild a sorted set object.
  * The function returns 0 on error, 1 on success. */
+/* Emit "ZPEXPIREAT key <pxat> MEMBERS 1 <member>" for one member. */
+static int rioWriteZsetMemberExpireAt(rio *r, robj *key, const char *member, size_t member_len, long long expiry) {
+    if (!rioWriteBulkCount(r, '*', 6)) return 0;
+    if (!rioWriteBulkString(r, "ZPEXPIREAT", 10)) return 0;
+    if (!rioWriteBulkObject(r, key)) return 0;
+    if (!rioWriteBulkLongLong(r, expiry)) return 0;
+    if (!rioWriteBulkString(r, "MEMBERS", 7)) return 0;
+    if (!rioWriteBulkLongLong(r, 1)) return 0;
+    if (!rioWriteBulkString(r, member, member_len)) return 0;
+    return 1;
+}
+
 int rewriteSortedSetObject(rio *r, robj *key, robj *o) {
     long long count = 0, items = zsetLength(o);
 
@@ -2060,6 +2072,55 @@ int rewriteSortedSetObject(rio *r, robj *key, robj *o) {
         hashtableCleanupIterator(&iter);
     } else {
         serverPanic("Unknown sorted zset encoding");
+    }
+
+    /* Emit member TTLs after the ZADDs. A member whose expiry is already in
+     * the past is re-added by the ZADD above and then removed here on replay
+     * (ZPEXPIREAT with a past time deletes the member), converging to the same
+     * state without special-casing expired-but-unreaped members. */
+    if (zsetTypeHasVolatileMembers(o)) {
+        if (objectGetEncoding(o) == OBJ_ENCODING_LISTPACK) {
+            unsigned char *zl = objectGetVal(o);
+            unsigned char *eptr = lpSeek(zl, 0), *sptr;
+            char numbuf[LONG_STR_SIZE];
+            while (eptr != NULL) {
+                sptr = lpNext(zl, eptr);
+                serverAssert(sptr != NULL);
+                long long expiry = zzlGetExpiry(zl, sptr);
+                if (expiry != EXPIRY_NONE) {
+                    unsigned int vlen;
+                    long long vll;
+                    unsigned char *vstr = lpGetValue(eptr, &vlen, &vll);
+                    const char *m = (char *)vstr;
+                    size_t mlen = vlen;
+                    if (vstr == NULL) {
+                        mlen = ll2string(numbuf, sizeof(numbuf), vll);
+                        m = numbuf;
+                    }
+                    if (!rioWriteZsetMemberExpireAt(r, key, m, mlen, expiry)) return 0;
+                }
+                eptr = lpNext(zl, sptr);
+            }
+        } else {
+            zset *zs = objectGetVal(o);
+            hashtableIterator iter;
+            hashtableInitIterator(&iter, zs->ht, 0);
+            void *next;
+            while (hashtableNext(&iter, &next)) {
+                OrderedIndexItem *node = next;
+                long long expiry = zsetNodeGetExpiry(zs, node);
+                if (expiry != EXPIRY_NONE) {
+                    const char *ele;
+                    size_t ele_len;
+                    orderedIndexItemGetElement(node, &ele, &ele_len);
+                    if (!rioWriteZsetMemberExpireAt(r, key, ele, ele_len, expiry)) {
+                        hashtableCleanupIterator(&iter);
+                        return 0;
+                    }
+                }
+            }
+            hashtableCleanupIterator(&iter);
+        }
     }
     return 1;
 }
