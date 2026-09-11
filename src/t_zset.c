@@ -657,24 +657,17 @@ unsigned char *zzlDeleteRangeByRank(unsigned char *zl, unsigned int start, unsig
  * cycle reaps them, but they are hidden from value-returning reads.
  *----------------------------------------------------------------------------*/
 
-/* Transient "ignore TTL" state, consulted by zsetExpiryIsVisible(). Safe as a
- * file-scope flag because command execution is single threaded and every
- * ignore-bracket is a tight set(true)/.../set(false) pair not spanning
- * commands (mirrors hash's listpack_ttl_ignored). */
-static bool zset_ttl_ignored = false;
-
-static inline void zsetTypeIgnoreTTL(bool ignore) {
-    zset_ttl_ignored = ignore;
-}
-
 /* Whether a member whose stored expiry is 'expiry' is visible in the current
- * execution context. EXPIRY_NONE (no TTL) is always visible; inside an
- * ignore-TTL bracket everything is visible; under POLICY_IGNORE_EXPIRE
- * (loading, replication stream, slot migration, import mode) expired members
- * remain visible so both encodings and replicas agree. */
+ * execution context. EXPIRY_NONE (no TTL) is always visible; under
+ * POLICY_IGNORE_EXPIRE (loading, replication stream, slot migration, import
+ * mode) expired members remain visible so both encodings and replicas agree.
+ *
+ * Unlike hash there is no transient "ignore TTL" bracket: the zset reaper and
+ * encoding-conversion paths read expiries directly (zzlGetExpiry /
+ * zsetNodeGetExpiry) rather than through this visibility filter, so no
+ * file-scope override is needed. */
 static inline bool zsetExpiryIsVisible(long long expiry) {
     if (expiry == EXPIRY_NONE) return true;
-    if (zset_ttl_ignored) return true;
     if (getExpirationPolicyWithFlags(0) == POLICY_IGNORE_EXPIRE) return true;
     return !timestampIsExpired(expiry);
 }
