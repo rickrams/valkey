@@ -2299,6 +2299,8 @@ void createSharedObjects(void) {
     shared.hpexpireat = createSharedString("HPEXPIREAT");
     shared.hpersist = createSharedString("HPERSIST");
     shared.srem = createSharedString("SREM");
+    shared.zrem = createSharedString("ZREM");
+    shared.zpexpireat = createSharedString("ZPEXPIREAT");
     shared.xgroup = createSharedString("XGROUP");
     shared.xclaim = createSharedString("XCLAIM");
     shared.xdel = createSharedString("XDEL");

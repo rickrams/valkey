@@ -168,7 +168,7 @@ void fieldExpireScanCallback(void *privdata, void *volaKey, int didx) {
     expireScanData *data = privdata;
     robj *o = volaKey;
     serverAssert(o);
-    serverAssert(hashTypeHasVolatileFields(o));
+    serverAssert(objectGetType(o) == OBJ_HASH ? hashTypeHasVolatileFields(o) : zsetTypeHasVolatileMembers(o));
 
     data->has_more_expired_entries = false;
     data->sampled++;

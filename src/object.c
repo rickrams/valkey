@@ -671,6 +671,7 @@ robj *createZsetObject(void) {
 
     zs->ht = hashtableCreate(&zsetHashtableType);
     zs->oi = orderedIndexCreate();
+    zs->node_expires = NULL;
     o = createObject(OBJ_ZSET, zs);
     objectSetEncoding(o, OBJ_ENCODING_BTREE);
     return o;
@@ -729,6 +730,7 @@ void freeZsetObject(robj *o) {
         zs = objectGetVal(o);
         hashtableRelease(zs->ht);
         orderedIndexFree(zs->oi);
+        if (zs->node_expires) hashtableRelease(zs->node_expires);
         zfree(zs);
         break;
     case OBJ_ENCODING_LISTPACK: zfree(objectGetVal(o)); break;

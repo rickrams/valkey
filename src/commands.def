@@ -9590,6 +9590,119 @@ struct COMMAND_ARG ZDIFFSTORE_Args[] = {
 {MAKE_ARG("key",ARG_TYPE_KEY,1,NULL,NULL,NULL,CMD_ARG_MULTIPLE,0,NULL)},
 };
 
+/********** ZEXPIRE ********************/
+
+#ifndef SKIP_CMD_HISTORY_TABLE
+/* ZEXPIRE history */
+#define ZEXPIRE_History NULL
+#endif
+
+#ifndef SKIP_CMD_TIPS_TABLE
+/* ZEXPIRE tips */
+#define ZEXPIRE_Tips NULL
+#endif
+
+#ifndef SKIP_CMD_KEY_SPECS_TABLE
+/* ZEXPIRE key specs */
+keySpec ZEXPIRE_Keyspecs[1] = {
+{NULL,CMD_KEY_RW|CMD_KEY_UPDATE,KSPEC_BS_INDEX,.bs.index={1},KSPEC_FK_RANGE,.fk.range={0,1,0}}
+};
+#endif
+
+/* ZEXPIRE condition argument table */
+struct COMMAND_ARG ZEXPIRE_condition_Subargs[] = {
+{MAKE_ARG("nx",ARG_TYPE_PURE_TOKEN,-1,"NX",NULL,NULL,CMD_ARG_NONE,0,NULL)},
+{MAKE_ARG("xx",ARG_TYPE_PURE_TOKEN,-1,"XX",NULL,NULL,CMD_ARG_NONE,0,NULL)},
+{MAKE_ARG("gt",ARG_TYPE_PURE_TOKEN,-1,"GT",NULL,NULL,CMD_ARG_NONE,0,NULL)},
+{MAKE_ARG("lt",ARG_TYPE_PURE_TOKEN,-1,"LT",NULL,NULL,CMD_ARG_NONE,0,NULL)},
+};
+
+/* ZEXPIRE members argument table */
+struct COMMAND_ARG ZEXPIRE_members_Subargs[] = {
+{MAKE_ARG("nummembers",ARG_TYPE_INTEGER,-1,NULL,NULL,NULL,CMD_ARG_NONE,0,NULL)},
+{MAKE_ARG("member",ARG_TYPE_STRING,-1,NULL,NULL,NULL,CMD_ARG_MULTIPLE,0,NULL)},
+};
+
+/* ZEXPIRE argument table */
+struct COMMAND_ARG ZEXPIRE_Args[] = {
+{MAKE_ARG("key",ARG_TYPE_KEY,0,NULL,NULL,NULL,CMD_ARG_NONE,0,NULL)},
+{MAKE_ARG("seconds",ARG_TYPE_INTEGER,-1,NULL,NULL,NULL,CMD_ARG_NONE,0,NULL)},
+{MAKE_ARG("condition",ARG_TYPE_ONEOF,-1,NULL,NULL,NULL,CMD_ARG_OPTIONAL,4,NULL),.subargs=ZEXPIRE_condition_Subargs},
+{MAKE_ARG("members",ARG_TYPE_BLOCK,-1,"MEMBERS",NULL,NULL,CMD_ARG_NONE,2,NULL),.subargs=ZEXPIRE_members_Subargs},
+};
+
+/********** ZEXPIREAT ********************/
+
+#ifndef SKIP_CMD_HISTORY_TABLE
+/* ZEXPIREAT history */
+#define ZEXPIREAT_History NULL
+#endif
+
+#ifndef SKIP_CMD_TIPS_TABLE
+/* ZEXPIREAT tips */
+#define ZEXPIREAT_Tips NULL
+#endif
+
+#ifndef SKIP_CMD_KEY_SPECS_TABLE
+/* ZEXPIREAT key specs */
+keySpec ZEXPIREAT_Keyspecs[1] = {
+{NULL,CMD_KEY_RW|CMD_KEY_UPDATE,KSPEC_BS_INDEX,.bs.index={1},KSPEC_FK_RANGE,.fk.range={0,1,0}}
+};
+#endif
+
+/* ZEXPIREAT condition argument table */
+struct COMMAND_ARG ZEXPIREAT_condition_Subargs[] = {
+{MAKE_ARG("nx",ARG_TYPE_PURE_TOKEN,-1,"NX",NULL,NULL,CMD_ARG_NONE,0,NULL)},
+{MAKE_ARG("xx",ARG_TYPE_PURE_TOKEN,-1,"XX",NULL,NULL,CMD_ARG_NONE,0,NULL)},
+{MAKE_ARG("gt",ARG_TYPE_PURE_TOKEN,-1,"GT",NULL,NULL,CMD_ARG_NONE,0,NULL)},
+{MAKE_ARG("lt",ARG_TYPE_PURE_TOKEN,-1,"LT",NULL,NULL,CMD_ARG_NONE,0,NULL)},
+};
+
+/* ZEXPIREAT members argument table */
+struct COMMAND_ARG ZEXPIREAT_members_Subargs[] = {
+{MAKE_ARG("nummembers",ARG_TYPE_INTEGER,-1,NULL,NULL,NULL,CMD_ARG_NONE,0,NULL)},
+{MAKE_ARG("member",ARG_TYPE_STRING,-1,NULL,NULL,NULL,CMD_ARG_MULTIPLE,0,NULL)},
+};
+
+/* ZEXPIREAT argument table */
+struct COMMAND_ARG ZEXPIREAT_Args[] = {
+{MAKE_ARG("key",ARG_TYPE_KEY,0,NULL,NULL,NULL,CMD_ARG_NONE,0,NULL)},
+{MAKE_ARG("unix-time-seconds",ARG_TYPE_INTEGER,-1,NULL,NULL,NULL,CMD_ARG_NONE,0,NULL)},
+{MAKE_ARG("condition",ARG_TYPE_ONEOF,-1,NULL,NULL,NULL,CMD_ARG_OPTIONAL,4,NULL),.subargs=ZEXPIREAT_condition_Subargs},
+{MAKE_ARG("members",ARG_TYPE_BLOCK,-1,"MEMBERS",NULL,NULL,CMD_ARG_NONE,2,NULL),.subargs=ZEXPIREAT_members_Subargs},
+};
+
+/********** ZEXPIRETIME ********************/
+
+#ifndef SKIP_CMD_HISTORY_TABLE
+/* ZEXPIRETIME history */
+#define ZEXPIRETIME_History NULL
+#endif
+
+#ifndef SKIP_CMD_TIPS_TABLE
+/* ZEXPIRETIME tips */
+#define ZEXPIRETIME_Tips NULL
+#endif
+
+#ifndef SKIP_CMD_KEY_SPECS_TABLE
+/* ZEXPIRETIME key specs */
+keySpec ZEXPIRETIME_Keyspecs[1] = {
+{NULL,CMD_KEY_RO|CMD_KEY_ACCESS,KSPEC_BS_INDEX,.bs.index={1},KSPEC_FK_RANGE,.fk.range={0,1,0}}
+};
+#endif
+
+/* ZEXPIRETIME members argument table */
+struct COMMAND_ARG ZEXPIRETIME_members_Subargs[] = {
+{MAKE_ARG("nummembers",ARG_TYPE_INTEGER,0,NULL,NULL,NULL,CMD_ARG_NONE,0,NULL)},
+{MAKE_ARG("member",ARG_TYPE_STRING,-1,NULL,NULL,NULL,CMD_ARG_MULTIPLE,0,NULL)},
+};
+
+/* ZEXPIRETIME argument table */
+struct COMMAND_ARG ZEXPIRETIME_Args[] = {
+{MAKE_ARG("key",ARG_TYPE_KEY,0,NULL,NULL,NULL,CMD_ARG_NONE,0,NULL)},
+{MAKE_ARG("members",ARG_TYPE_BLOCK,-1,"MEMBERS",NULL,NULL,CMD_ARG_NONE,2,NULL),.subargs=ZEXPIRETIME_members_Subargs},
+};
+
 /********** ZINCRBY ********************/
 
 #ifndef SKIP_CMD_HISTORY_TABLE
@@ -9796,6 +9909,150 @@ struct COMMAND_ARG ZMSCORE_Args[] = {
 {MAKE_ARG("member",ARG_TYPE_STRING,-1,NULL,NULL,NULL,CMD_ARG_MULTIPLE,0,NULL)},
 };
 
+/********** ZPERSIST ********************/
+
+#ifndef SKIP_CMD_HISTORY_TABLE
+/* ZPERSIST history */
+#define ZPERSIST_History NULL
+#endif
+
+#ifndef SKIP_CMD_TIPS_TABLE
+/* ZPERSIST tips */
+#define ZPERSIST_Tips NULL
+#endif
+
+#ifndef SKIP_CMD_KEY_SPECS_TABLE
+/* ZPERSIST key specs */
+keySpec ZPERSIST_Keyspecs[1] = {
+{NULL,CMD_KEY_RW|CMD_KEY_UPDATE,KSPEC_BS_INDEX,.bs.index={1},KSPEC_FK_RANGE,.fk.range={0,1,0}}
+};
+#endif
+
+/* ZPERSIST members argument table */
+struct COMMAND_ARG ZPERSIST_members_Subargs[] = {
+{MAKE_ARG("nummembers",ARG_TYPE_INTEGER,0,NULL,NULL,NULL,CMD_ARG_NONE,0,NULL)},
+{MAKE_ARG("member",ARG_TYPE_STRING,-1,NULL,NULL,NULL,CMD_ARG_MULTIPLE,0,NULL)},
+};
+
+/* ZPERSIST argument table */
+struct COMMAND_ARG ZPERSIST_Args[] = {
+{MAKE_ARG("key",ARG_TYPE_KEY,0,NULL,NULL,NULL,CMD_ARG_NONE,0,NULL)},
+{MAKE_ARG("members",ARG_TYPE_BLOCK,-1,"MEMBERS",NULL,NULL,CMD_ARG_NONE,2,NULL),.subargs=ZPERSIST_members_Subargs},
+};
+
+/********** ZPEXPIRE ********************/
+
+#ifndef SKIP_CMD_HISTORY_TABLE
+/* ZPEXPIRE history */
+#define ZPEXPIRE_History NULL
+#endif
+
+#ifndef SKIP_CMD_TIPS_TABLE
+/* ZPEXPIRE tips */
+#define ZPEXPIRE_Tips NULL
+#endif
+
+#ifndef SKIP_CMD_KEY_SPECS_TABLE
+/* ZPEXPIRE key specs */
+keySpec ZPEXPIRE_Keyspecs[1] = {
+{NULL,CMD_KEY_RW|CMD_KEY_UPDATE,KSPEC_BS_INDEX,.bs.index={1},KSPEC_FK_RANGE,.fk.range={0,1,0}}
+};
+#endif
+
+/* ZPEXPIRE condition argument table */
+struct COMMAND_ARG ZPEXPIRE_condition_Subargs[] = {
+{MAKE_ARG("nx",ARG_TYPE_PURE_TOKEN,-1,"NX",NULL,NULL,CMD_ARG_NONE,0,NULL)},
+{MAKE_ARG("xx",ARG_TYPE_PURE_TOKEN,-1,"XX",NULL,NULL,CMD_ARG_NONE,0,NULL)},
+{MAKE_ARG("gt",ARG_TYPE_PURE_TOKEN,-1,"GT",NULL,NULL,CMD_ARG_NONE,0,NULL)},
+{MAKE_ARG("lt",ARG_TYPE_PURE_TOKEN,-1,"LT",NULL,NULL,CMD_ARG_NONE,0,NULL)},
+};
+
+/* ZPEXPIRE members argument table */
+struct COMMAND_ARG ZPEXPIRE_members_Subargs[] = {
+{MAKE_ARG("nummembers",ARG_TYPE_INTEGER,-1,NULL,NULL,NULL,CMD_ARG_NONE,0,NULL)},
+{MAKE_ARG("member",ARG_TYPE_STRING,-1,NULL,NULL,NULL,CMD_ARG_MULTIPLE,0,NULL)},
+};
+
+/* ZPEXPIRE argument table */
+struct COMMAND_ARG ZPEXPIRE_Args[] = {
+{MAKE_ARG("key",ARG_TYPE_KEY,0,NULL,NULL,NULL,CMD_ARG_NONE,0,NULL)},
+{MAKE_ARG("milliseconds",ARG_TYPE_INTEGER,-1,NULL,NULL,NULL,CMD_ARG_NONE,0,NULL)},
+{MAKE_ARG("condition",ARG_TYPE_ONEOF,-1,NULL,NULL,NULL,CMD_ARG_OPTIONAL,4,NULL),.subargs=ZPEXPIRE_condition_Subargs},
+{MAKE_ARG("members",ARG_TYPE_BLOCK,-1,"MEMBERS",NULL,NULL,CMD_ARG_NONE,2,NULL),.subargs=ZPEXPIRE_members_Subargs},
+};
+
+/********** ZPEXPIREAT ********************/
+
+#ifndef SKIP_CMD_HISTORY_TABLE
+/* ZPEXPIREAT history */
+#define ZPEXPIREAT_History NULL
+#endif
+
+#ifndef SKIP_CMD_TIPS_TABLE
+/* ZPEXPIREAT tips */
+#define ZPEXPIREAT_Tips NULL
+#endif
+
+#ifndef SKIP_CMD_KEY_SPECS_TABLE
+/* ZPEXPIREAT key specs */
+keySpec ZPEXPIREAT_Keyspecs[1] = {
+{NULL,CMD_KEY_RW|CMD_KEY_UPDATE,KSPEC_BS_INDEX,.bs.index={1},KSPEC_FK_RANGE,.fk.range={0,1,0}}
+};
+#endif
+
+/* ZPEXPIREAT condition argument table */
+struct COMMAND_ARG ZPEXPIREAT_condition_Subargs[] = {
+{MAKE_ARG("nx",ARG_TYPE_PURE_TOKEN,-1,"NX",NULL,NULL,CMD_ARG_NONE,0,NULL)},
+{MAKE_ARG("xx",ARG_TYPE_PURE_TOKEN,-1,"XX",NULL,NULL,CMD_ARG_NONE,0,NULL)},
+{MAKE_ARG("gt",ARG_TYPE_PURE_TOKEN,-1,"GT",NULL,NULL,CMD_ARG_NONE,0,NULL)},
+{MAKE_ARG("lt",ARG_TYPE_PURE_TOKEN,-1,"LT",NULL,NULL,CMD_ARG_NONE,0,NULL)},
+};
+
+/* ZPEXPIREAT members argument table */
+struct COMMAND_ARG ZPEXPIREAT_members_Subargs[] = {
+{MAKE_ARG("nummembers",ARG_TYPE_INTEGER,-1,NULL,NULL,NULL,CMD_ARG_NONE,0,NULL)},
+{MAKE_ARG("member",ARG_TYPE_STRING,-1,NULL,NULL,NULL,CMD_ARG_MULTIPLE,0,NULL)},
+};
+
+/* ZPEXPIREAT argument table */
+struct COMMAND_ARG ZPEXPIREAT_Args[] = {
+{MAKE_ARG("key",ARG_TYPE_KEY,0,NULL,NULL,NULL,CMD_ARG_NONE,0,NULL)},
+{MAKE_ARG("unix-time-milliseconds",ARG_TYPE_INTEGER,-1,NULL,NULL,NULL,CMD_ARG_NONE,0,NULL)},
+{MAKE_ARG("condition",ARG_TYPE_ONEOF,-1,NULL,NULL,NULL,CMD_ARG_OPTIONAL,4,NULL),.subargs=ZPEXPIREAT_condition_Subargs},
+{MAKE_ARG("members",ARG_TYPE_BLOCK,-1,"MEMBERS",NULL,NULL,CMD_ARG_NONE,2,NULL),.subargs=ZPEXPIREAT_members_Subargs},
+};
+
+/********** ZPEXPIRETIME ********************/
+
+#ifndef SKIP_CMD_HISTORY_TABLE
+/* ZPEXPIRETIME history */
+#define ZPEXPIRETIME_History NULL
+#endif
+
+#ifndef SKIP_CMD_TIPS_TABLE
+/* ZPEXPIRETIME tips */
+#define ZPEXPIRETIME_Tips NULL
+#endif
+
+#ifndef SKIP_CMD_KEY_SPECS_TABLE
+/* ZPEXPIRETIME key specs */
+keySpec ZPEXPIRETIME_Keyspecs[1] = {
+{NULL,CMD_KEY_RO|CMD_KEY_ACCESS,KSPEC_BS_INDEX,.bs.index={1},KSPEC_FK_RANGE,.fk.range={0,1,0}}
+};
+#endif
+
+/* ZPEXPIRETIME members argument table */
+struct COMMAND_ARG ZPEXPIRETIME_members_Subargs[] = {
+{MAKE_ARG("nummembers",ARG_TYPE_INTEGER,0,NULL,NULL,NULL,CMD_ARG_NONE,0,NULL)},
+{MAKE_ARG("member",ARG_TYPE_STRING,-1,NULL,NULL,NULL,CMD_ARG_MULTIPLE,0,NULL)},
+};
+
+/* ZPEXPIRETIME argument table */
+struct COMMAND_ARG ZPEXPIRETIME_Args[] = {
+{MAKE_ARG("key",ARG_TYPE_KEY,0,NULL,NULL,NULL,CMD_ARG_NONE,0,NULL)},
+{MAKE_ARG("members",ARG_TYPE_BLOCK,-1,"MEMBERS",NULL,NULL,CMD_ARG_NONE,2,NULL),.subargs=ZPEXPIRETIME_members_Subargs},
+};
+
 /********** ZPOPMAX ********************/
 
 #ifndef SKIP_CMD_HISTORY_TABLE
@@ -9844,6 +10101,37 @@ keySpec ZPOPMIN_Keyspecs[1] = {
 struct COMMAND_ARG ZPOPMIN_Args[] = {
 {MAKE_ARG("key",ARG_TYPE_KEY,0,NULL,NULL,NULL,CMD_ARG_NONE,0,NULL)},
 {MAKE_ARG("count",ARG_TYPE_INTEGER,-1,NULL,NULL,NULL,CMD_ARG_OPTIONAL,0,NULL)},
+};
+
+/********** ZPTTL ********************/
+
+#ifndef SKIP_CMD_HISTORY_TABLE
+/* ZPTTL history */
+#define ZPTTL_History NULL
+#endif
+
+#ifndef SKIP_CMD_TIPS_TABLE
+/* ZPTTL tips */
+#define ZPTTL_Tips NULL
+#endif
+
+#ifndef SKIP_CMD_KEY_SPECS_TABLE
+/* ZPTTL key specs */
+keySpec ZPTTL_Keyspecs[1] = {
+{NULL,CMD_KEY_RO|CMD_KEY_ACCESS,KSPEC_BS_INDEX,.bs.index={1},KSPEC_FK_RANGE,.fk.range={0,1,0}}
+};
+#endif
+
+/* ZPTTL members argument table */
+struct COMMAND_ARG ZPTTL_members_Subargs[] = {
+{MAKE_ARG("nummembers",ARG_TYPE_INTEGER,0,NULL,NULL,NULL,CMD_ARG_NONE,0,NULL)},
+{MAKE_ARG("member",ARG_TYPE_STRING,-1,NULL,NULL,NULL,CMD_ARG_MULTIPLE,0,NULL)},
+};
+
+/* ZPTTL argument table */
+struct COMMAND_ARG ZPTTL_Args[] = {
+{MAKE_ARG("key",ARG_TYPE_KEY,0,NULL,NULL,NULL,CMD_ARG_NONE,0,NULL)},
+{MAKE_ARG("members",ARG_TYPE_BLOCK,-1,"MEMBERS",NULL,NULL,CMD_ARG_NONE,2,NULL),.subargs=ZPTTL_members_Subargs},
 };
 
 /********** ZRANDMEMBER ********************/
@@ -10361,6 +10649,37 @@ keySpec ZSCORE_Keyspecs[1] = {
 struct COMMAND_ARG ZSCORE_Args[] = {
 {MAKE_ARG("key",ARG_TYPE_KEY,0,NULL,NULL,NULL,CMD_ARG_NONE,0,NULL)},
 {MAKE_ARG("member",ARG_TYPE_STRING,-1,NULL,NULL,NULL,CMD_ARG_NONE,0,NULL)},
+};
+
+/********** ZTTL ********************/
+
+#ifndef SKIP_CMD_HISTORY_TABLE
+/* ZTTL history */
+#define ZTTL_History NULL
+#endif
+
+#ifndef SKIP_CMD_TIPS_TABLE
+/* ZTTL tips */
+#define ZTTL_Tips NULL
+#endif
+
+#ifndef SKIP_CMD_KEY_SPECS_TABLE
+/* ZTTL key specs */
+keySpec ZTTL_Keyspecs[1] = {
+{NULL,CMD_KEY_RO|CMD_KEY_ACCESS,KSPEC_BS_INDEX,.bs.index={1},KSPEC_FK_RANGE,.fk.range={0,1,0}}
+};
+#endif
+
+/* ZTTL members argument table */
+struct COMMAND_ARG ZTTL_members_Subargs[] = {
+{MAKE_ARG("nummembers",ARG_TYPE_INTEGER,0,NULL,NULL,NULL,CMD_ARG_NONE,0,NULL)},
+{MAKE_ARG("member",ARG_TYPE_STRING,-1,NULL,NULL,NULL,CMD_ARG_MULTIPLE,0,NULL)},
+};
+
+/* ZTTL argument table */
+struct COMMAND_ARG ZTTL_Args[] = {
+{MAKE_ARG("key",ARG_TYPE_KEY,0,NULL,NULL,NULL,CMD_ARG_NONE,0,NULL)},
+{MAKE_ARG("members",ARG_TYPE_BLOCK,-1,"MEMBERS",NULL,NULL,CMD_ARG_NONE,2,NULL),.subargs=ZTTL_members_Subargs},
 };
 
 /********** ZUNION ********************/
@@ -12263,6 +12582,9 @@ struct COMMAND_STRUCT serverCommandTable[] = {
 {MAKE_CMD("zcount","Returns the count of members in a sorted set that have scores within a range.","O(log(N)) with N being the number of elements in the sorted set.","2.0.0",CMD_DOC_NONE,NULL,NULL,"sorted_set",COMMAND_GROUP_SORTED_SET,ZCOUNT_History,0,ZCOUNT_Tips,0,zcountCommand,4,CMD_READONLY|CMD_FAST,ACL_CATEGORY_FAST|ACL_CATEGORY_READ|ACL_CATEGORY_SORTEDSET,NULL,ZCOUNT_Keyspecs,1,NULL,3),.args=ZCOUNT_Args},
 {MAKE_CMD("zdiff","Returns the difference between multiple sorted sets.","O(L + (N-K)log(N)) worst case where L is the total number of elements in all the sets, N is the size of the first set, and K is the size of the result set.","6.2.0",CMD_DOC_NONE,NULL,NULL,"sorted_set",COMMAND_GROUP_SORTED_SET,ZDIFF_History,0,ZDIFF_Tips,0,zdiffCommand,-3,CMD_READONLY,ACL_CATEGORY_READ|ACL_CATEGORY_SLOW|ACL_CATEGORY_SORTEDSET,NULL,ZDIFF_Keyspecs,1,zunionInterDiffGetKeys,3),.args=ZDIFF_Args},
 {MAKE_CMD("zdiffstore","Stores the difference of multiple sorted sets in a key.","O(L + (N-K)log(N)) worst case where L is the total number of elements in all the sets, N is the size of the first set, and K is the size of the result set.","6.2.0",CMD_DOC_NONE,NULL,NULL,"sorted_set",COMMAND_GROUP_SORTED_SET,ZDIFFSTORE_History,0,ZDIFFSTORE_Tips,0,zdiffstoreCommand,-4,CMD_WRITE|CMD_DENYOOM,ACL_CATEGORY_SLOW|ACL_CATEGORY_SORTEDSET|ACL_CATEGORY_WRITE,NULL,ZDIFFSTORE_Keyspecs,2,zunionInterDiffStoreGetKeys,3),.args=ZDIFFSTORE_Args},
+{MAKE_CMD("zexpire","Sets expiry time on sorted set members.","O(N) where N is the number of specified members.","9.0.0",CMD_DOC_NONE,NULL,NULL,"sorted_set",COMMAND_GROUP_SORTED_SET,ZEXPIRE_History,0,ZEXPIRE_Tips,0,zexpireCommand,-6,CMD_WRITE|CMD_FAST,ACL_CATEGORY_FAST|ACL_CATEGORY_SORTEDSET|ACL_CATEGORY_WRITE,NULL,ZEXPIRE_Keyspecs,1,NULL,4),.args=ZEXPIRE_Args},
+{MAKE_CMD("zexpireat","Sets the expiration for sorted set members to a Unix timestamp in seconds.","O(N) where N is the number of specified members.","9.0.0",CMD_DOC_NONE,NULL,NULL,"sorted_set",COMMAND_GROUP_SORTED_SET,ZEXPIREAT_History,0,ZEXPIREAT_Tips,0,zexpireatCommand,-6,CMD_WRITE|CMD_FAST,ACL_CATEGORY_FAST|ACL_CATEGORY_SORTEDSET|ACL_CATEGORY_WRITE,NULL,ZEXPIREAT_Keyspecs,1,NULL,4),.args=ZEXPIREAT_Args},
+{MAKE_CMD("zexpiretime","Returns the Unix timestamp in seconds at which the given sorted set member(s) will expire.","O(N) where N is the number of specified members.","9.0.0",CMD_DOC_NONE,NULL,NULL,"sorted_set",COMMAND_GROUP_SORTED_SET,ZEXPIRETIME_History,0,ZEXPIRETIME_Tips,0,zexpiretimeCommand,-5,CMD_READONLY|CMD_FAST,ACL_CATEGORY_FAST|ACL_CATEGORY_READ|ACL_CATEGORY_SORTEDSET,NULL,ZEXPIRETIME_Keyspecs,1,NULL,2),.args=ZEXPIRETIME_Args},
 {MAKE_CMD("zincrby","Increments the score of a member in a sorted set.","O(log(N)) where N is the number of elements in the sorted set.","1.2.0",CMD_DOC_NONE,NULL,NULL,"sorted_set",COMMAND_GROUP_SORTED_SET,ZINCRBY_History,0,ZINCRBY_Tips,0,zincrbyCommand,4,CMD_WRITE|CMD_DENYOOM|CMD_FAST,ACL_CATEGORY_FAST|ACL_CATEGORY_SORTEDSET|ACL_CATEGORY_WRITE,NULL,ZINCRBY_Keyspecs,1,NULL,3),.args=ZINCRBY_Args,.member_arg_index=3},
 {MAKE_CMD("zinter","Returns the intersect of multiple sorted sets.","O(N*K)+O(M*log(M)) worst case with N being the smallest input sorted set, K being the number of input sorted sets and M being the number of elements in the resulting sorted set.","6.2.0",CMD_DOC_NONE,NULL,NULL,"sorted_set",COMMAND_GROUP_SORTED_SET,ZINTER_History,0,ZINTER_Tips,0,zinterCommand,-3,CMD_READONLY,ACL_CATEGORY_READ|ACL_CATEGORY_SLOW|ACL_CATEGORY_SORTEDSET,NULL,ZINTER_Keyspecs,1,zunionInterDiffGetKeys,5),.args=ZINTER_Args},
 {MAKE_CMD("zintercard","Returns the number of members of the intersect of multiple sorted sets.","O(N*K) worst case with N being the smallest input sorted set, K being the number of input sorted sets.","7.0.0",CMD_DOC_NONE,NULL,NULL,"sorted_set",COMMAND_GROUP_SORTED_SET,ZINTERCARD_History,0,ZINTERCARD_Tips,0,zinterCardCommand,-3,CMD_READONLY,ACL_CATEGORY_READ|ACL_CATEGORY_SLOW|ACL_CATEGORY_SORTEDSET,NULL,ZINTERCARD_Keyspecs,1,zunionInterDiffGetKeys,3),.args=ZINTERCARD_Args},
@@ -12270,8 +12592,13 @@ struct COMMAND_STRUCT serverCommandTable[] = {
 {MAKE_CMD("zlexcount","Returns the number of members in a sorted set within a lexicographical range.","O(log(N)) with N being the number of elements in the sorted set.","2.8.9",CMD_DOC_NONE,NULL,NULL,"sorted_set",COMMAND_GROUP_SORTED_SET,ZLEXCOUNT_History,0,ZLEXCOUNT_Tips,0,zlexcountCommand,4,CMD_READONLY|CMD_FAST,ACL_CATEGORY_FAST|ACL_CATEGORY_READ|ACL_CATEGORY_SORTEDSET,NULL,ZLEXCOUNT_Keyspecs,1,NULL,3),.args=ZLEXCOUNT_Args},
 {MAKE_CMD("zmpop","Returns the highest- or lowest-scoring members from one or more sorted sets after removing them. Deletes the sorted set if the last member was popped.","O(K) + O(M*log(N)) where K is the number of provided keys, N being the number of elements in the sorted set, and M being the number of elements popped.","7.0.0",CMD_DOC_NONE,NULL,NULL,"sorted_set",COMMAND_GROUP_SORTED_SET,ZMPOP_History,0,ZMPOP_Tips,0,zmpopCommand,-4,CMD_WRITE,ACL_CATEGORY_SLOW|ACL_CATEGORY_SORTEDSET|ACL_CATEGORY_WRITE,NULL,ZMPOP_Keyspecs,1,zmpopGetKeys,4),.args=ZMPOP_Args},
 {MAKE_CMD("zmscore","Returns the score of one or more members in a sorted set.","O(N) where N is the number of members being requested.","6.2.0",CMD_DOC_NONE,NULL,NULL,"sorted_set",COMMAND_GROUP_SORTED_SET,ZMSCORE_History,0,ZMSCORE_Tips,0,zmscoreCommand,-3,CMD_READONLY|CMD_FAST,ACL_CATEGORY_FAST|ACL_CATEGORY_READ|ACL_CATEGORY_SORTEDSET,NULL,ZMSCORE_Keyspecs,1,NULL,2),.args=ZMSCORE_Args,.member_arg_index=2},
+{MAKE_CMD("zpersist","Remove the existing expiration on sorted set member(s).","O(N) where N is the number of specified members.","9.0.0",CMD_DOC_NONE,NULL,NULL,"sorted_set",COMMAND_GROUP_SORTED_SET,ZPERSIST_History,0,ZPERSIST_Tips,0,zpersistCommand,-5,CMD_WRITE|CMD_FAST,ACL_CATEGORY_FAST|ACL_CATEGORY_SORTEDSET|ACL_CATEGORY_WRITE,NULL,ZPERSIST_Keyspecs,1,NULL,2),.args=ZPERSIST_Args},
+{MAKE_CMD("zpexpire","Sets expiry time on sorted set members, in milliseconds.","O(N) where N is the number of specified members.","9.0.0",CMD_DOC_NONE,NULL,NULL,"sorted_set",COMMAND_GROUP_SORTED_SET,ZPEXPIRE_History,0,ZPEXPIRE_Tips,0,zpexpireCommand,-6,CMD_WRITE|CMD_FAST,ACL_CATEGORY_FAST|ACL_CATEGORY_SORTEDSET|ACL_CATEGORY_WRITE,NULL,ZPEXPIRE_Keyspecs,1,NULL,4),.args=ZPEXPIRE_Args},
+{MAKE_CMD("zpexpireat","Sets the expiration for sorted set members to a Unix timestamp in milliseconds.","O(N) where N is the number of specified members.","9.0.0",CMD_DOC_NONE,NULL,NULL,"sorted_set",COMMAND_GROUP_SORTED_SET,ZPEXPIREAT_History,0,ZPEXPIREAT_Tips,0,zpexpireatCommand,-6,CMD_WRITE|CMD_FAST,ACL_CATEGORY_FAST|ACL_CATEGORY_SORTEDSET|ACL_CATEGORY_WRITE,NULL,ZPEXPIREAT_Keyspecs,1,NULL,4),.args=ZPEXPIREAT_Args},
+{MAKE_CMD("zpexpiretime","Returns the Unix timestamp in milliseconds at which the given sorted set member(s) will expire.","O(N) where N is the number of specified members.","9.0.0",CMD_DOC_NONE,NULL,NULL,"sorted_set",COMMAND_GROUP_SORTED_SET,ZPEXPIRETIME_History,0,ZPEXPIRETIME_Tips,0,zpexpiretimeCommand,-5,CMD_READONLY|CMD_FAST,ACL_CATEGORY_FAST|ACL_CATEGORY_READ|ACL_CATEGORY_SORTEDSET,NULL,ZPEXPIRETIME_Keyspecs,1,NULL,2),.args=ZPEXPIRETIME_Args},
 {MAKE_CMD("zpopmax","Returns the highest-scoring members from a sorted set after removing them. Deletes the sorted set if the last member was popped.","O(log(N)*M) with N being the number of elements in the sorted set, and M being the number of elements popped.","5.0.0",CMD_DOC_NONE,NULL,NULL,"sorted_set",COMMAND_GROUP_SORTED_SET,ZPOPMAX_History,0,ZPOPMAX_Tips,0,zpopmaxCommand,-2,CMD_WRITE|CMD_FAST,ACL_CATEGORY_FAST|ACL_CATEGORY_SORTEDSET|ACL_CATEGORY_WRITE,NULL,ZPOPMAX_Keyspecs,1,NULL,2),.args=ZPOPMAX_Args},
 {MAKE_CMD("zpopmin","Returns the lowest-scoring members from a sorted set after removing them. Deletes the sorted set if the last member was popped.","O(log(N)*M) with N being the number of elements in the sorted set, and M being the number of elements popped.","5.0.0",CMD_DOC_NONE,NULL,NULL,"sorted_set",COMMAND_GROUP_SORTED_SET,ZPOPMIN_History,0,ZPOPMIN_Tips,0,zpopminCommand,-2,CMD_WRITE|CMD_FAST,ACL_CATEGORY_FAST|ACL_CATEGORY_SORTEDSET|ACL_CATEGORY_WRITE,NULL,ZPOPMIN_Keyspecs,1,NULL,2),.args=ZPOPMIN_Args},
+{MAKE_CMD("zpttl","Returns the remaining time to live in milliseconds of a sorted set member(s) that have an associated expiration.","O(N) where N is the number of specified members.","9.0.0",CMD_DOC_NONE,NULL,NULL,"sorted_set",COMMAND_GROUP_SORTED_SET,ZPTTL_History,0,ZPTTL_Tips,0,zpttlCommand,-5,CMD_READONLY|CMD_FAST,ACL_CATEGORY_FAST|ACL_CATEGORY_READ|ACL_CATEGORY_SORTEDSET,NULL,ZPTTL_Keyspecs,1,NULL,2),.args=ZPTTL_Args},
 {MAKE_CMD("zrandmember","Returns one or more random members from a sorted set.","O(N) where N is the number of members returned","6.2.0",CMD_DOC_NONE,NULL,NULL,"sorted_set",COMMAND_GROUP_SORTED_SET,ZRANDMEMBER_History,0,ZRANDMEMBER_Tips,1,zrandmemberCommand,-2,CMD_READONLY,ACL_CATEGORY_READ|ACL_CATEGORY_SLOW|ACL_CATEGORY_SORTEDSET,NULL,ZRANDMEMBER_Keyspecs,1,NULL,2),.args=ZRANDMEMBER_Args},
 {MAKE_CMD("zrange","Returns members in a sorted set within a range of indexes.","O(log(N)+M) with N being the number of elements in the sorted set and M the number of elements returned.","1.2.0",CMD_DOC_NONE,NULL,NULL,"sorted_set",COMMAND_GROUP_SORTED_SET,ZRANGE_History,2,ZRANGE_Tips,0,zrangeCommand,-4,CMD_READONLY,ACL_CATEGORY_READ|ACL_CATEGORY_SLOW|ACL_CATEGORY_SORTEDSET,NULL,ZRANGE_Keyspecs,1,NULL,8),.args=ZRANGE_Args},
 {MAKE_CMD("zrangebylex","Returns members in a sorted set within a lexicographical range.","O(log(N)+M) with N being the number of elements in the sorted set and M the number of elements being returned. If M is constant (e.g. always asking for the first 10 elements with LIMIT), you can consider it O(log(N)).","2.8.9",CMD_DOC_NONE,NULL,NULL,"sorted_set",COMMAND_GROUP_SORTED_SET,ZRANGEBYLEX_History,1,ZRANGEBYLEX_Tips,0,zrangebylexCommand,-4,CMD_READONLY,ACL_CATEGORY_READ|ACL_CATEGORY_SLOW|ACL_CATEGORY_SORTEDSET,NULL,ZRANGEBYLEX_Keyspecs,1,NULL,5),.args=ZRANGEBYLEX_Args},
@@ -12288,6 +12615,7 @@ struct COMMAND_STRUCT serverCommandTable[] = {
 {MAKE_CMD("zrevrank","Returns the index of a member in a sorted set ordered by descending scores.","O(log(N))","2.0.0",CMD_DOC_NONE,NULL,NULL,"sorted_set",COMMAND_GROUP_SORTED_SET,ZREVRANK_History,1,ZREVRANK_Tips,0,zrevrankCommand,-3,CMD_READONLY|CMD_FAST,ACL_CATEGORY_FAST|ACL_CATEGORY_READ|ACL_CATEGORY_SORTEDSET,NULL,ZREVRANK_Keyspecs,1,NULL,3),.args=ZREVRANK_Args,.member_arg_index=2},
 {MAKE_CMD("zscan","Iterates over members and scores of a sorted set.","O(1) for every call. O(N) for a complete iteration, including enough command calls for the cursor to return back to 0. N is the number of elements inside the collection.","2.8.0",CMD_DOC_NONE,NULL,NULL,"sorted_set",COMMAND_GROUP_SORTED_SET,ZSCAN_History,1,ZSCAN_Tips,1,zscanCommand,-3,CMD_READONLY,ACL_CATEGORY_READ|ACL_CATEGORY_SLOW|ACL_CATEGORY_SORTEDSET,NULL,ZSCAN_Keyspecs,1,NULL,5),.args=ZSCAN_Args},
 {MAKE_CMD("zscore","Returns the score of a member in a sorted set.","O(1)","1.2.0",CMD_DOC_NONE,NULL,NULL,"sorted_set",COMMAND_GROUP_SORTED_SET,ZSCORE_History,0,ZSCORE_Tips,0,zscoreCommand,3,CMD_READONLY|CMD_FAST,ACL_CATEGORY_FAST|ACL_CATEGORY_READ|ACL_CATEGORY_SORTEDSET,NULL,ZSCORE_Keyspecs,1,NULL,2),.args=ZSCORE_Args,.member_arg_index=2},
+{MAKE_CMD("zttl","Returns the remaining time to live in seconds of a sorted set member(s) that have an associated expiration.","O(N) where N is the number of specified members.","9.0.0",CMD_DOC_NONE,NULL,NULL,"sorted_set",COMMAND_GROUP_SORTED_SET,ZTTL_History,0,ZTTL_Tips,0,zttlCommand,-5,CMD_READONLY|CMD_FAST,ACL_CATEGORY_FAST|ACL_CATEGORY_READ|ACL_CATEGORY_SORTEDSET,NULL,ZTTL_Keyspecs,1,NULL,2),.args=ZTTL_Args},
 {MAKE_CMD("zunion","Returns the union of multiple sorted sets.","O(N)+O(M*log(M)) with N being the sum of the sizes of the input sorted sets, and M being the number of elements in the resulting sorted set.","6.2.0",CMD_DOC_NONE,NULL,NULL,"sorted_set",COMMAND_GROUP_SORTED_SET,ZUNION_History,0,ZUNION_Tips,0,zunionCommand,-3,CMD_READONLY,ACL_CATEGORY_READ|ACL_CATEGORY_SLOW|ACL_CATEGORY_SORTEDSET,NULL,ZUNION_Keyspecs,1,zunionInterDiffGetKeys,5),.args=ZUNION_Args},
 {MAKE_CMD("zunionstore","Stores the union of multiple sorted sets in a key.","O(N)+O(M log(M)) with N being the sum of the sizes of the input sorted sets, and M being the number of elements in the resulting sorted set.","2.0.0",CMD_DOC_NONE,NULL,NULL,"sorted_set",COMMAND_GROUP_SORTED_SET,ZUNIONSTORE_History,0,ZUNIONSTORE_Tips,0,zunionstoreCommand,-4,CMD_WRITE|CMD_DENYOOM,ACL_CATEGORY_SLOW|ACL_CATEGORY_SORTEDSET|ACL_CATEGORY_WRITE,NULL,ZUNIONSTORE_Keyspecs,2,zunionInterDiffStoreGetKeys,5),.args=ZUNIONSTORE_Args},
 /* stream */

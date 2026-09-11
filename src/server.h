@@ -1530,6 +1530,7 @@ struct sharedObjectsStruct {
         *execaborterr, *noautherr, *noreplicaserr, *busykeyerr, *oomerr, *plus, *messagebulk, *pmessagebulk,
         *subscribebulk, *unsubscribebulk, *psubscribebulk, *punsubscribebulk, *del, *unlink, *rpop, *lpop, *lpush, *zadd,
         *rpoplpush, *lmove, *blmove, *zpopmin, *zpopmax, *emptyscan, *multi, *exec, *left, *right, *hset, *hsetex, *hdel, *hpexpireat, *hpersist, *srem,
+        *zrem, *zpexpireat,
         *xgroup, *xclaim, *xdel, *xack, *script, *replconf, *eval, *cluster, *syncslots, *persist, *set, *pexpireat, *pexpire, *time, *pxat, *absttl,
         *retrycount, *force, *justid, *entriesread, *lastid, *ping, *setid, *keepttl, *load, *createconsumer, *getack,
         *special_asterisk, *special_equals, *default_username, *redacted, *ssubscribebulk, *sunsubscribebulk, *fields,
@@ -1548,6 +1549,13 @@ typedef struct OrderedIndex OrderedIndex;
 typedef struct zset {
     hashtable *ht;
     OrderedIndex *oi;
+    /* Per-member TTL for the OBJ_ENCODING_BTREE encoding. Lazily allocated
+     * (NULL until the first member gets an expiry) so sorted sets without
+     * field TTLs pay nothing. Maps OrderedIndexItem* -> absolute expiry in
+     * milliseconds; both the command path (via ht) and ordered-index
+     * traversal hold the node pointer, so no member string is duplicated.
+     * The listpack encoding stores expiries as listpack metadata instead. */
+    hashtable *node_expires;
 } zset;
 
 /* Lookup-key marking for fbtree hashtable disambiguation.
@@ -3543,6 +3551,9 @@ void zsetConvertToListpackIfNeeded(robj *zobj, size_t maxelelen, size_t totelele
 int zsetScore(robj *zobj, sds member, double *score);
 int zsetAdd(robj *zobj, double score, sds ele, int in_flags, int *out_flags, double *newscore);
 int zsetDel(robj *zobj, sds ele);
+bool zsetTypeHasVolatileMembers(robj *o);
+int zsetTypeGetExpiry(robj *o, sds member, mstime_t *expiry);
+size_t zsetTypeDeleteExpiredMembers(robj *o, mstime_t now, unsigned long max, robj **out_members);
 robj *zsetDup(robj *o);
 void genericZpopCommand(client *c,
                         robj **keyv,
@@ -3852,7 +3863,7 @@ int removeExpire(serverDb *db, robj *key);
 void deleteExpiredKeyAndPropagateWithDictIndex(serverDb *db, robj *keyobj, int dict_index);
 void deleteExpiredKeyFromOverwriteAndPropagate(client *c, robj *keyobj);
 void propagateDeletion(serverDb *db, robj *key, int lazy, int slot);
-int propagateFieldsDeletion(serverDb *db, robj *o, size_t n_fields, robj *fields[], int slot);
+int propagateFieldsDeletion(serverDb *db, robj *o, robj *delcmd, size_t n_fields, robj *fields[], int slot);
 size_t dbReclaimExpiredFields(robj *o, serverDb *db, mstime_t now, unsigned long max_entries, int didx);
 int keyIsExpired(serverDb *db, robj *key);
 long long getExpire(serverDb *db, robj *key);
@@ -4204,6 +4215,15 @@ void bzpopminCommand(client *c);
 void bzpopmaxCommand(client *c);
 void bzmpopCommand(client *c);
 void zrandmemberCommand(client *c);
+void zexpireCommand(client *c);
+void zexpireatCommand(client *c);
+void zpexpireCommand(client *c);
+void zpexpireatCommand(client *c);
+void zttlCommand(client *c);
+void zpttlCommand(client *c);
+void zexpiretimeCommand(client *c);
+void zpexpiretimeCommand(client *c);
+void zpersistCommand(client *c);
 void multiCommand(client *c);
 void execCommand(client *c);
 void discardCommand(client *c);

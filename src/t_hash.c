@@ -1865,7 +1865,7 @@ void hsetexCommand(client *c) {
                 /* Propagate individual fields deletions */
                 int idx = 0;
                 while (idx < expired_overwritten) {
-                    idx += propagateFieldsDeletion(c->db, o, expired_overwritten - idx,
+                    idx += propagateFieldsDeletion(c->db, o, shared.hdel, expired_overwritten - idx,
                                                    &keepttl_fields[idx], c->slot);
                 }
                 zfree(keepttl_fields);

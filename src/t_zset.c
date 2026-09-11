@@ -633,6 +633,378 @@ unsigned char *zzlDeleteRangeByRank(unsigned char *zl, unsigned int start, unsig
 }
 
 /*-----------------------------------------------------------------------------
+ * Sorted set member (field-level) expiration
+ *
+ * Mirrors the hash field-TTL design (see t_hash.c). Two encodings, two
+ * storage mechanisms:
+ *
+ *  - OBJ_ENCODING_LISTPACK: each member's absolute expiry (ms) is stored as a
+ *    listpack metadata entry trailing that member's score entry, plus a
+ *    single leading aggregate volatile-count header. Metadata entries are
+ *    invisible to lpNext/lpPrev/lpLength/lpSeek/lpFind, so the ordinary zzl*
+ *    traversal is unaffected.
+ *
+ *  - OBJ_ENCODING_BTREE: a lazily-allocated hashtable (zs->node_expires) maps
+ *    each volatile OrderedIndexItem* to its expiry. Both the command path (via
+ *    zs->ht) and ordered-index traversal already hold the node pointer, so no
+ *    member string is duplicated. Unlike hash, the zset hashtable stores raw
+ *    node pointers with no room for an expiry and therefore has no
+ *    validateEntry hook: every read path filters expired members explicitly
+ *    via zsetExpiryIsVisible(), for both encodings.
+ *
+ * Semantics are eventually-consistent (like hash HLEN): expired-but-unreaped
+ * members still contribute to ZCARD / ZRANK / ZCOUNT until the active or lazy
+ * cycle reaps them, but they are hidden from value-returning reads.
+ *----------------------------------------------------------------------------*/
+
+/* Transient "ignore TTL" state, consulted by zsetExpiryIsVisible(). Safe as a
+ * file-scope flag because command execution is single threaded and every
+ * ignore-bracket is a tight set(true)/.../set(false) pair not spanning
+ * commands (mirrors hash's listpack_ttl_ignored). */
+static bool zset_ttl_ignored = false;
+
+static inline void zsetTypeIgnoreTTL(bool ignore) {
+    zset_ttl_ignored = ignore;
+}
+
+/* Whether a member whose stored expiry is 'expiry' is visible in the current
+ * execution context. EXPIRY_NONE (no TTL) is always visible; inside an
+ * ignore-TTL bracket everything is visible; under POLICY_IGNORE_EXPIRE
+ * (loading, replication stream, slot migration, import mode) expired members
+ * remain visible so both encodings and replicas agree. */
+static inline bool zsetExpiryIsVisible(long long expiry) {
+    if (expiry == EXPIRY_NONE) return true;
+    if (zset_ttl_ignored) return true;
+    if (getExpirationPolicyWithFlags(0) == POLICY_IGNORE_EXPIRE) return true;
+    return !timestampIsExpired(expiry);
+}
+
+/* ---- listpack encoding ---- */
+
+/* Expiry of the listpack member whose score entry is 'sptr': the integer
+ * payload of the score entry's trailing metadata entry, or EXPIRY_NONE when
+ * the member carries none. Purely a read of what is stored. */
+static long long zzlGetExpiry(unsigned char *zl, unsigned char *sptr) {
+    unsigned char *metadata_ptr = lpGetMetadata(zl, sptr);
+    return metadata_ptr ? lpGetMetadataValue(metadata_ptr) : EXPIRY_NONE;
+}
+
+/* Maintain the aggregate volatile-count header of a listpack-encoded zset: a
+ * single tagged entry leading the listpack whose integer payload is the number
+ * of members carrying an expiry. Created on the 0->1 transition, updated in
+ * place, deleted on the 1->0 transition, so zsets without member TTLs pay
+ * nothing. Must be called after the mutation it accounts for; it may
+ * reallocate the listpack, so callers must not reuse element pointers taken
+ * before it. Mirrors hashTypeUpdateVolatileCount(). */
+static void zzlUpdateVolatileCount(robj *o, long delta) {
+    if (delta == 0) return;
+    serverAssert(objectGetEncoding(o) == OBJ_ENCODING_LISTPACK);
+    unsigned char *zl = objectGetVal(o);
+    unsigned char *head = lpStart(zl);
+    int has_head = lpIsMetadata(head);
+    long long count = (has_head ? lpGetMetadataValue(head) : 0) + delta;
+    serverAssert(count >= 0);
+    if (count == 0) {
+        if (has_head) zl = lpRemoveMetadata(zl, head);
+    } else {
+        unsigned char intenc[LP_MAX_INT_ENCODING_LEN];
+        uint64_t enclen;
+        lpEncodeIntegerGetType(count, intenc, &enclen);
+        zl = lpInsertMetadata(zl, intenc, enclen, head, has_head ? LP_REPLACE : LP_BEFORE, NULL);
+    }
+    objectSetVal(o, zl);
+}
+
+/* Attach/refresh (or with expiry==EXPIRY_NONE, remove) the expiry metadata of
+ * the member whose score entry is 'sptr'. Returns the (possibly reallocated)
+ * listpack and updates the aggregate header. */
+static unsigned char *zzlSetExpiry(robj *o, unsigned char *zl, unsigned char *sptr, mstime_t expiry) {
+    unsigned char *metadata_ptr = lpGetMetadata(zl, sptr);
+    if (expiry == EXPIRY_NONE) {
+        if (metadata_ptr) {
+            zl = lpRemoveMetadata(zl, metadata_ptr);
+            objectSetVal(o, zl);
+            zzlUpdateVolatileCount(o, -1);
+            zl = objectGetVal(o);
+        }
+        return zl;
+    }
+    unsigned char intenc[LP_MAX_INT_ENCODING_LEN];
+    uint64_t enclen;
+    lpEncodeIntegerGetType(expiry, intenc, &enclen);
+    if (metadata_ptr) {
+        zl = lpInsertMetadata(zl, intenc, enclen, metadata_ptr, LP_REPLACE, NULL);
+        objectSetVal(o, zl);
+    } else {
+        zl = lpInsertMetadata(zl, intenc, enclen, sptr, LP_AFTER, NULL);
+        objectSetVal(o, zl);
+        zzlUpdateVolatileCount(o, 1);
+        zl = objectGetVal(o);
+    }
+    return zl;
+}
+
+/* ---- btree encoding: node_expires side map ---- */
+
+typedef struct zsetNodeExpire {
+    OrderedIndexItem *node; /* key */
+    mstime_t expiry;        /* absolute expiry in milliseconds */
+} zsetNodeExpire;
+
+static uint64_t zsetNodeExpireHash(const void *key) {
+    OrderedIndexItem *node = ((const zsetNodeExpire *)key)->node;
+    return hashtableGenHashFunction((const char *)&node, sizeof(node));
+}
+
+static int zsetNodeExpireCompare(const void *a, const void *b) {
+    return ((const zsetNodeExpire *)a)->node == ((const zsetNodeExpire *)b)->node;
+}
+
+static void zsetNodeExpireDestructor(void *entry) {
+    zfree(entry);
+}
+
+hashtableType zsetNodeExpiresHashtableType = {
+    .hashFunction = zsetNodeExpireHash,
+    .keyCompare = zsetNodeExpireCompare,
+    .entryDestructor = zsetNodeExpireDestructor,
+};
+
+/* Absolute expiry of a btree node, or EXPIRY_NONE if the node has none. */
+static mstime_t zsetNodeGetExpiry(zset *zs, OrderedIndexItem *node) {
+    if (zs->node_expires == NULL) return EXPIRY_NONE;
+    zsetNodeExpire probe = {.node = node};
+    void *found;
+    if (hashtableFind(zs->node_expires, &probe, &found)) return ((zsetNodeExpire *)found)->expiry;
+    return EXPIRY_NONE;
+}
+
+/* Set/refresh the expiry of a btree node (expiry != EXPIRY_NONE). */
+static void zsetNodeSetExpiry(zset *zs, OrderedIndexItem *node, mstime_t expiry) {
+    serverAssert(expiry != EXPIRY_NONE);
+    if (zs->node_expires == NULL) zs->node_expires = hashtableCreate(&zsetNodeExpiresHashtableType);
+    zsetNodeExpire probe = {.node = node};
+    void *existing;
+    if (hashtableFind(zs->node_expires, &probe, &existing)) {
+        ((zsetNodeExpire *)existing)->expiry = expiry;
+        return;
+    }
+    zsetNodeExpire *e = zmalloc(sizeof(*e));
+    e->node = node;
+    e->expiry = expiry;
+    serverAssert(hashtableAdd(zs->node_expires, e));
+}
+
+/* Remove a btree node's expiry, if any. Returns true if one was removed. The
+ * side map is released once empty. Call whenever a node is deleted or persisted. */
+static bool zsetNodeDelExpiry(zset *zs, OrderedIndexItem *node) {
+    if (zs->node_expires == NULL) return false;
+    zsetNodeExpire probe = {.node = node};
+    if (!hashtableDelete(zs->node_expires, &probe)) return false;
+    if (hashtableSize(zs->node_expires) == 0) {
+        hashtableRelease(zs->node_expires);
+        zs->node_expires = NULL;
+    }
+    return true;
+}
+
+/* Move a node's expiry entry from old_node to new_node (used when a score
+ * update repositions a member into a fresh node). No-op if untracked. */
+static void zsetNodeMigrateExpiry(zset *zs, OrderedIndexItem *old_node, OrderedIndexItem *new_node) {
+    if (zs->node_expires == NULL || old_node == new_node) return;
+    zsetNodeExpire probe = {.node = old_node};
+    void *found;
+    if (!hashtableFind(zs->node_expires, &probe, &found)) return;
+    mstime_t expiry = ((zsetNodeExpire *)found)->expiry;
+    hashtableDelete(zs->node_expires, &probe);
+    zsetNodeExpire *e = zmalloc(sizeof(*e));
+    e->node = new_node;
+    e->expiry = expiry;
+    serverAssert(hashtableAdd(zs->node_expires, e));
+}
+
+/* ---- encoding-agnostic queries ---- */
+
+/* Whether the sorted set has at least one member carrying an expiry (including
+ * expired-but-unreaped ones). O(1) for both encodings. */
+bool zsetTypeHasVolatileMembers(robj *o) {
+    if (o == NULL) return false;
+    serverAssert(objectGetType(o) == OBJ_ZSET);
+    if (o->encoding == OBJ_ENCODING_LISTPACK) {
+        return lpIsMetadata(lpStart(objectGetVal(o)));
+    }
+    serverAssert(o->encoding == OBJ_ENCODING_BTREE);
+    zset *zs = objectGetVal(o);
+    return zs->node_expires != NULL && hashtableSize(zs->node_expires) > 0;
+}
+
+/* Locate the btree node for 'member' (raw, no TTL filtering). NULL if absent. */
+static OrderedIndexItem *zsetBtreeFindNode(zset *zs, sds member) {
+    void *entry;
+    zsetMarkLookupKey(member);
+    int found = hashtableFind(zs->ht, member, &entry);
+    zsetUnmarkLookupKey(member);
+    return found ? entry : NULL;
+}
+
+/* Result codes for member expiry modification, matching the hash field-TTL
+ * codes (see t_hash.c expiryModificationResult). */
+typedef enum {
+    ZEXPIRY_NOT_EXIST = -2,       /* key or member does not exist / not visible */
+    ZEXPIRY_SUCCESS = 1,          /* expiry applied or removed */
+    ZEXPIRY_FAILED_CONDITION = 0, /* NX/XX/GT/LT condition not met */
+    ZEXPIRY_FAILED = -1,          /* e.g. persist on a member with no expiry */
+    ZEXPIRY_EXPIRE_ASAP = 2,      /* expiry is in the past; member deleted */
+} zsetExpiryResult;
+
+/* Visible expiry of 'member'. Returns C_ERR if the key is NULL, the member is
+ * absent, or the member is expired-but-unreaped (hidden). On C_OK, *expiry is
+ * the absolute expiry in ms, or EXPIRY_NONE if the member has none. */
+int zsetTypeGetExpiry(robj *o, sds member, mstime_t *expiry) {
+    if (o == NULL) return C_ERR;
+    long long e = EXPIRY_NONE;
+    if (o->encoding == OBJ_ENCODING_LISTPACK) {
+        unsigned char *zl = objectGetVal(o);
+        unsigned char *eptr = zzlFind(zl, member, NULL);
+        if (eptr == NULL) return C_ERR;
+        e = zzlGetExpiry(zl, lpNext(zl, eptr));
+    } else {
+        serverAssert(o->encoding == OBJ_ENCODING_BTREE);
+        zset *zs = objectGetVal(o);
+        OrderedIndexItem *node = zsetBtreeFindNode(zs, member);
+        if (node == NULL) return C_ERR;
+        e = zsetNodeGetExpiry(zs, node);
+    }
+    if (!zsetExpiryIsVisible(e)) return C_ERR;
+    if (expiry) *expiry = e;
+    return C_OK;
+}
+
+/* Set/modify the expiration of 'member'. See zsetExpiryResult. Mirrors
+ * hashTypeSetExpire(): EXPIRY_NONE is treated as +inf for GT/LT; an expiry in
+ * the past deletes the member (EXPIRE_ASAP). */
+zsetExpiryResult zsetTypeSetExpire(robj *o, sds member, mstime_t expiry, int flag) {
+    if (o == NULL) return ZEXPIRY_NOT_EXIST;
+
+    mstime_t current = EXPIRY_NONE;
+    if (zsetTypeGetExpiry(o, member, &current) == C_ERR) return ZEXPIRY_NOT_EXIST;
+
+    if ((flag & EXPIRE_NX) && current != EXPIRY_NONE) return ZEXPIRY_FAILED_CONDITION;
+    if ((flag & EXPIRE_XX) && current == EXPIRY_NONE) return ZEXPIRY_FAILED_CONDITION;
+    if ((flag & EXPIRE_GT) && (current == EXPIRY_NONE || expiry <= current)) return ZEXPIRY_FAILED_CONDITION;
+    if ((flag & EXPIRE_LT) && current != EXPIRY_NONE && expiry >= current) return ZEXPIRY_FAILED_CONDITION;
+
+    if (checkAlreadyExpired(expiry)) {
+        serverAssert(zsetDel(o, member));
+        return ZEXPIRY_EXPIRE_ASAP;
+    }
+
+    if (o->encoding == OBJ_ENCODING_LISTPACK) {
+        unsigned char *zl = objectGetVal(o);
+        unsigned char *eptr = zzlFind(zl, member, NULL);
+        serverAssert(eptr != NULL);
+        zzlSetExpiry(o, zl, lpNext(zl, eptr), expiry);
+    } else {
+        zset *zs = objectGetVal(o);
+        OrderedIndexItem *node = zsetBtreeFindNode(zs, member);
+        serverAssert(node != NULL);
+        zsetNodeSetExpiry(zs, node, expiry);
+    }
+    return ZEXPIRY_SUCCESS;
+}
+
+/* Remove any expiration from 'member'. */
+zsetExpiryResult zsetTypePersist(robj *o, sds member) {
+    if (o == NULL || objectGetType(o) != OBJ_ZSET) return ZEXPIRY_NOT_EXIST;
+
+    mstime_t current = EXPIRY_NONE;
+    if (zsetTypeGetExpiry(o, member, &current) == C_ERR) return ZEXPIRY_NOT_EXIST;
+    if (current == EXPIRY_NONE) return ZEXPIRY_FAILED;
+
+    if (o->encoding == OBJ_ENCODING_LISTPACK) {
+        unsigned char *zl = objectGetVal(o);
+        unsigned char *eptr = zzlFind(zl, member, NULL);
+        serverAssert(eptr != NULL);
+        zzlSetExpiry(o, zl, lpNext(zl, eptr), EXPIRY_NONE);
+    } else {
+        zset *zs = objectGetVal(o);
+        OrderedIndexItem *node = zsetBtreeFindNode(zs, member);
+        serverAssert(node != NULL);
+        zsetNodeDelExpiry(zs, node);
+    }
+    return ZEXPIRY_SUCCESS;
+}
+
+/* Maximum members reaped per batch (bounds stack usage). */
+#define ZSET_EXPIRE_BATCH 1024
+
+/* Delete up to 'max' members of 'o' whose expiry is <= now. When 'out_members'
+ * is non-NULL it is filled (up to max) with newly-created string objects naming
+ * the reaped members, for propagation as ZREM. Returns the number reaped.
+ * Mirrors hashTypeDeleteExpiredFields(). */
+size_t zsetTypeDeleteExpiredMembers(robj *o, mstime_t now, unsigned long max, robj **out_members) {
+    if (max > ZSET_EXPIRE_BATCH) max = ZSET_EXPIRE_BATCH;
+    size_t expired = 0;
+
+    if (o->encoding == OBJ_ENCODING_LISTPACK) {
+        unsigned char *zl = objectGetVal(o);
+        unsigned char *eptr = lpFirst(zl);
+        unsigned char ele_intbuf[LP_INTBUF_SIZE];
+        while (eptr && expired < max) {
+            int64_t elen;
+            unsigned char *ele = lpGet(eptr, &elen, ele_intbuf);
+            unsigned char *sptr = lpNext(zl, eptr);
+            if (!sptr) break;
+            long long e = zzlGetExpiry(zl, sptr);
+            if (e != EXPIRY_NONE && e <= now) {
+                if (out_members) out_members[expired] = createStringObject((char *)ele, elen);
+                /* Delete the member/score pair (trailing metadata goes with
+                 * it); eptr is updated to the following entry so the scan
+                 * stays linear. */
+                zl = lpDeleteRangeWithEntry(zl, &eptr, 2);
+                objectSetVal(o, zl);
+                server.stat_expiredfields++;
+                expired++;
+                continue;
+            }
+            eptr = lpNext(zl, sptr);
+        }
+        /* Bulk-update the aggregate header once. */
+        zzlUpdateVolatileCount(o, -(long)expired);
+        return expired;
+    }
+
+    serverAssert(o->encoding == OBJ_ENCODING_BTREE);
+    zset *zs = objectGetVal(o);
+    if (zs->node_expires == NULL) return 0;
+
+    /* Collect victim members first: deleting mutates node_expires, so we must
+     * not delete while iterating it. */
+    sds victims[ZSET_EXPIRE_BATCH];
+    hashtableIterator it;
+    hashtableInitIterator(&it, zs->node_expires, 0);
+    void *elem;
+    while (expired < max && hashtableNext(&it, &elem)) {
+        zsetNodeExpire *ne = elem;
+        if (ne->expiry <= now) {
+            const char *eptr;
+            size_t elen;
+            orderedIndexItemGetElement(ne->node, &eptr, &elen);
+            victims[expired++] = sdsnewlen(eptr, elen);
+        }
+    }
+    hashtableCleanupIterator(&it);
+
+    for (size_t i = 0; i < expired; i++) {
+        if (out_members) out_members[i] = createStringObject(victims[i], sdslen(victims[i]));
+        serverAssert(zsetDel(o, victims[i]));
+        server.stat_expiredfields++;
+        sdsfree(victims[i]);
+    }
+    return expired;
+}
+
+/*-----------------------------------------------------------------------------
  * Common sorted set API
  *----------------------------------------------------------------------------*/
 
@@ -702,6 +1074,7 @@ void zsetConvertAndExpand(robj *zobj, int encoding, unsigned long cap) {
         zs = zmalloc(sizeof(*zs));
         zs->ht = hashtableCreate(&zsetHashtableType);
         zs->oi = orderedIndexCreate();
+        zs->node_expires = NULL;
 
         /* Presize the dict to avoid rehashing */
         hashtableExpand(zs->ht, cap);
@@ -726,8 +1099,11 @@ void zsetConvertAndExpand(robj *zobj, int encoding, unsigned long cap) {
                 ele_len = vlen;
             }
 
+            /* Carry any per-member expiry into the btree side map. */
+            long long expiry = zzlGetExpiry(zl, sptr);
             node = orderedIndexInsert(zs->oi, score, ele_ptr, ele_len);
             serverAssert(hashtableAdd(zs->ht, node));
+            if (expiry != EXPIRY_NONE) zsetNodeSetExpiry(zs, node, expiry);
             zzlNext(zl, &eptr, &sptr);
         }
 
@@ -744,14 +1120,33 @@ void zsetConvertAndExpand(robj *zobj, int encoding, unsigned long cap) {
         hashtableRelease(zs->ht);
 
         OrderedIndexItem *node;
+        long volatile_count = 0;
         while ((node = orderedIndexPopFirst(zs->oi)) != NULL) {
             const char *ele_ptr;
             size_t ele_len;
             orderedIndexItemGetElement(node, &ele_ptr, &ele_len);
+            mstime_t expiry = zsetNodeGetExpiry(zs, node);
             zl = zzlInsertAt(zl, NULL, ele_ptr, ele_len, orderedIndexItemGetScore(node));
+            /* Carry any per-member expiry into a listpack metadata entry
+             * trailing the just-appended score (the last real entry). The
+             * aggregate header is prepended once after the loop. */
+            if (expiry != EXPIRY_NONE) {
+                unsigned char intenc[LP_MAX_INT_ENCODING_LEN];
+                uint64_t enclen;
+                lpEncodeIntegerGetType(expiry, intenc, &enclen);
+                zl = lpInsertMetadata(zl, intenc, enclen, lpLast(zl), LP_AFTER, NULL);
+                volatile_count++;
+            }
             orderedIndexItemFree(node);
         }
+        if (volatile_count > 0) {
+            unsigned char intenc[LP_MAX_INT_ENCODING_LEN];
+            uint64_t enclen;
+            lpEncodeIntegerGetType(volatile_count, intenc, &enclen);
+            zl = lpInsertMetadata(zl, intenc, enclen, lpStart(zl), LP_BEFORE, NULL);
+        }
         orderedIndexFree(zs->oi);
+        if (zs->node_expires) hashtableRelease(zs->node_expires);
 
         zfree(zs);
         objectSetVal(zobj, zl);
@@ -782,7 +1177,11 @@ int zsetScore(robj *zobj, sds member, double *score) {
     if (!zobj || !member) return C_ERR;
 
     if (zobj->encoding == OBJ_ENCODING_LISTPACK) {
-        if (zzlFind(objectGetVal(zobj), member, score) == NULL) return C_ERR;
+        unsigned char *zl = objectGetVal(zobj);
+        unsigned char *eptr = zzlFind(zl, member, score);
+        if (eptr == NULL) return C_ERR;
+        /* Hide expired-but-unreaped members from score reads. */
+        if (!zsetExpiryIsVisible(zzlGetExpiry(zl, lpNext(zl, eptr)))) return C_ERR;
     } else if (zobj->encoding == OBJ_ENCODING_BTREE) {
         zset *zs = objectGetVal(zobj);
         void *entry;
@@ -791,6 +1190,7 @@ int zsetScore(robj *zobj, sds member, double *score) {
         zsetUnmarkLookupKey(member);
         if (!found) return C_ERR;
         OrderedIndexItem *setElement = entry;
+        if (!zsetExpiryIsVisible(zsetNodeGetExpiry(zs, setElement))) return C_ERR;
         *score = orderedIndexItemGetScore(setElement);
     } else {
         serverPanic("Unknown sorted set encoding");
@@ -887,10 +1287,24 @@ int zsetAdd(robj *zobj, double score, sds ele, int in_flags, int *out_flags, dou
 
             if (newscore) *newscore = score;
 
-            /* Remove and re-insert when score changed. */
+            /* Remove and re-insert when score changed. The member's TTL (if
+             * any) is preserved across the score change: a member expires by
+             * wall-clock regardless of score adjustments. zzlDelete drops the
+             * trailing expiry metadata with the pair, so capture it first and
+             * reattach it to the repositioned member. */
             if (score != curscore) {
+                unsigned char *zl = objectGetVal(zobj);
+                unsigned char *sptr = lpNext(zl, eptr);
+                long long keep_expiry = zzlGetExpiry(zl, sptr);
                 objectSetVal(zobj, zzlDelete(objectGetVal(zobj), eptr));
+                if (keep_expiry != EXPIRY_NONE) zzlUpdateVolatileCount(zobj, -1);
                 objectSetVal(zobj, zzlInsert(objectGetVal(zobj), ele, score));
+                if (keep_expiry != EXPIRY_NONE) {
+                    zl = objectGetVal(zobj);
+                    unsigned char *new_eptr = zzlFind(zl, ele, NULL);
+                    serverAssert(new_eptr != NULL);
+                    zzlSetExpiry(zobj, zl, lpNext(zl, new_eptr), keep_expiry);
+                }
                 *out_flags |= ZADD_OUT_UPDATED;
             }
             return 1;
@@ -947,11 +1361,13 @@ int zsetAdd(robj *zobj, double score, sds ele, int in_flags, int *out_flags, dou
 
             if (newscore) *newscore = score;
 
-            /* Remove and re-insert when score changes. */
+            /* Remove and re-insert when score changes. The member's TTL (if
+             * any) follows it to the (possibly new) node. */
             if (score != curscore) {
                 OrderedIndexItem *new_node = orderedIndexUpdateScore(zs->oi, old_node, score);
                 /* Update the node pointer stored in the hashtable. */
                 *node_ref_in_hashtable = new_node;
+                zsetNodeMigrateExpiry(zs, old_node, new_node);
                 *out_flags |= ZADD_OUT_UPDATED;
             }
             return 1;
@@ -984,6 +1400,9 @@ static int zsetRemoveFromIndex(zset *zs, sds ele) {
 
     /* hashtable only contains pointers to ordered index items. Nothing to free. */
 
+    /* Drop any per-member expiry before the node is freed. */
+    zsetNodeDelExpiry(zs, node);
+
     /* Delete from ordered index. */
     orderedIndexDelete(zs->oi, node);
 
@@ -997,7 +1416,10 @@ int zsetDel(robj *zobj, sds ele) {
         unsigned char *eptr;
 
         if ((eptr = zzlFind(objectGetVal(zobj), ele, NULL)) != NULL) {
+            unsigned char *zl = objectGetVal(zobj);
+            bool was_volatile = zzlGetExpiry(zl, lpNext(zl, eptr)) != EXPIRY_NONE;
             objectSetVal(zobj, zzlDelete(objectGetVal(zobj), eptr));
+            if (was_volatile) zzlUpdateVolatileCount(zobj, -1);
             return 1;
         }
     } else if (zobj->encoding == OBJ_ENCODING_BTREE) {
@@ -3859,4 +4281,216 @@ void zmpopCommand(client *c) {
 /* BZMPOP timeout numkeys key [<key> ...] MIN|MAX [COUNT count] */
 void bzmpopCommand(client *c) {
     zmpopGenericCommand(c, 2, 1);
+}
+
+/*-----------------------------------------------------------------------------
+ * Sorted set member expiration commands
+ *
+ * ZEXPIRE / ZPEXPIRE / ZEXPIREAT / ZPEXPIREAT     -> zexpireGenericCommand
+ * ZTTL / ZPTTL / ZEXPIRETIME / ZPEXPIRETIME       -> zttlGenericCommand
+ * ZPERSIST                                        -> zpersistCommand
+ *
+ * These mirror the hash field-TTL commands (see hexpireGenericCommand et al.
+ * in t_hash.c), using the MEMBERS token instead of FIELDS.
+ *----------------------------------------------------------------------------*/
+
+void zexpireGenericCommand(client *c, mstime_t basetime, int unit) {
+    robj *key = c->argv[1], *param = c->argv[2];
+    mstime_t when; /* unix time in milliseconds when the member will expire. */
+    int flag = 0;
+    int members_index = 3;
+    long long num_members = 0;
+    int i, expired = 0, updated = 0;
+    robj **new_argv = NULL;
+    int new_argc = 0;
+
+    for (; members_index < c->argc - 1; members_index++) {
+        if (!strcasecmp(objectGetVal(c->argv[members_index]), "members")) {
+            /* checking optional flags */
+            if (parseExtendedExpireArgumentsOrReply(c, &flag, members_index++) != C_OK) return;
+            if (getLongLongFromObjectOrReply(c, c->argv[members_index++], &num_members, NULL) != C_OK) return;
+            break;
+        }
+    }
+
+    /* Check that the parsed members number matches the real provided number of members */
+    if (!num_members || num_members != (c->argc - members_index)) {
+        addReplyError(c, "nummembers should be greater than 0 and match the provided number of members");
+        return;
+    }
+
+    if (convertExpireArgumentToUnixTime(c, param, basetime, unit, &when) == C_ERR) return;
+
+    robj *obj = lookupKeyWrite(c->db, key);
+
+    /* Non ZSET type return simple error */
+    if (checkType(c, obj, OBJ_ZSET)) return;
+
+    bool had_volatile = zsetTypeHasVolatileMembers(obj);
+
+    initDeferredReplyBuffer(c);
+
+    /* From this point we would return array reply */
+    addReplyArrayLen(c, num_members);
+
+    for (i = 0; i < num_members; i++) {
+        zsetExpiryResult result = zsetTypeSetExpire(obj, objectGetVal(c->argv[members_index + i]), when, flag);
+        if (result == ZEXPIRY_SUCCESS) {
+            updated++;
+        } else if (result == ZEXPIRY_EXPIRE_ASAP) {
+            /* Prepare a ZREM command vector to replicate the immediate deletion. */
+            if (new_argv == NULL) {
+                new_argv = zmalloc(sizeof(robj *) * (num_members + 2));
+                new_argv[new_argc++] = shared.zrem;
+                new_argv[new_argc++] = c->argv[1];
+                incrRefCount(c->argv[1]);
+            }
+            new_argv[new_argc++] = c->argv[members_index + i];
+            incrRefCount(c->argv[members_index + i]);
+            server.stat_expiredfields++;
+            expired++;
+        }
+        addReplyLongLong(c, result);
+    }
+
+    if (expired || updated) {
+        if (had_volatile != zsetTypeHasVolatileMembers(obj)) {
+            dbUpdateObjectWithVolatileItemsTracking(c->db, obj);
+        }
+        if (expired) {
+            replaceClientCommandVector(c, new_argc, new_argv);
+            notifyKeyspaceEvent(NOTIFY_ZSET, "zexpired", c->argv[1], c->db->id);
+        } else if (updated) {
+            /* Propagate as ZPEXPIREAT millisecond-timestamp; only rewrite the
+             * command arg if not already ZPEXPIREAT. */
+            if (c->cmd->proc != zpexpireatCommand) {
+                rewriteClientCommandArgument(c, 0, shared.zpexpireat);
+            }
+            /* Avoid creating a string object when it's the same as argv[2]. */
+            if (basetime != 0 || unit == UNIT_SECONDS) {
+                robj *when_obj = createStringObjectFromLongLong(when);
+                rewriteClientCommandArgument(c, 2, when_obj);
+                decrRefCount(when_obj);
+            }
+            notifyKeyspaceEvent(NOTIFY_ZSET, "zexpire", c->argv[1], c->db->id);
+        }
+        server.dirty += (expired + updated);
+        signalModifiedKey(c, c->db, c->argv[1]);
+        /* Delete the object in case it was left empty */
+        if (zsetLength(obj) == 0) {
+            dbDelete(c->db, c->argv[1]);
+            notifyKeyspaceEvent(NOTIFY_GENERIC, "del", c->argv[1], c->db->id);
+        }
+    }
+
+    commitDeferredReplyBuffer(c, 1);
+}
+
+void zexpireCommand(client *c) {
+    zexpireGenericCommand(c, commandTimeSnapshot(), UNIT_SECONDS);
+}
+
+void zexpireatCommand(client *c) {
+    zexpireGenericCommand(c, 0, UNIT_SECONDS);
+}
+
+void zpexpireCommand(client *c) {
+    zexpireGenericCommand(c, commandTimeSnapshot(), UNIT_MILLISECONDS);
+}
+
+void zpexpireatCommand(client *c) {
+    zexpireGenericCommand(c, 0, UNIT_MILLISECONDS);
+}
+
+void zpersistCommand(client *c) {
+    int members_index = 4, result = 0, changes = 0;
+    long long num_members = 0;
+
+    if (strcasecmp(objectGetVal(c->argv[members_index - 2]), "members")) {
+        addReplyErrorObject(c, shared.syntaxerr);
+        return;
+    }
+
+    if (getLongLongFromObjectOrReply(c, c->argv[members_index - 1], &num_members, NULL) != C_OK) return;
+
+    if (!num_members || num_members != (c->argc - members_index)) {
+        addReplyError(c, "nummembers should be greater than 0 and match the provided number of members");
+        return;
+    }
+
+    robj *zobj = lookupKeyWrite(c->db, c->argv[1]);
+    if (checkType(c, zobj, OBJ_ZSET)) return;
+
+    initDeferredReplyBuffer(c);
+    addReplyArrayLen(c, num_members);
+
+    bool had_volatile = zsetTypeHasVolatileMembers(zobj);
+
+    for (int i = 0; i < num_members; i++, members_index++) {
+        result = zsetTypePersist(zobj, objectGetVal(c->argv[members_index]));
+        if (result == ZEXPIRY_SUCCESS) {
+            server.dirty++;
+            changes++;
+        }
+        addReplyLongLong(c, result);
+    }
+    if (changes) {
+        if (had_volatile != zsetTypeHasVolatileMembers(zobj)) {
+            dbUpdateObjectWithVolatileItemsTracking(c->db, zobj);
+        }
+        notifyKeyspaceEvent(NOTIFY_ZSET, "zpersist", c->argv[1], c->db->id);
+        signalModifiedKey(c, c->db, c->argv[1]);
+    }
+
+    commitDeferredReplyBuffer(c, 1);
+}
+
+void zttlGenericCommand(client *c, mstime_t basetime, int unit) {
+    int members_index = 4;
+    long long num_members = 0, result = -2;
+
+    if (strcasecmp(objectGetVal(c->argv[members_index - 2]), "members")) {
+        addReplyErrorObject(c, shared.syntaxerr);
+        return;
+    }
+
+    if (getLongLongFromObjectOrReply(c, c->argv[members_index - 1], &num_members, NULL) != C_OK) return;
+
+    if (!num_members || num_members != (c->argc - members_index)) {
+        addReplyErrorObject(c, shared.syntaxerr);
+        return;
+    }
+
+    robj *zobj = lookupKeyRead(c->db, c->argv[1]);
+    if (checkType(c, zobj, OBJ_ZSET)) return;
+
+    addReplyArrayLen(c, num_members);
+
+    for (int i = 0; i < num_members; i++) {
+        if (!zobj || zsetTypeGetExpiry(zobj, objectGetVal(c->argv[members_index + i]), &result) == C_ERR) {
+            addReplyLongLong(c, -2);
+        } else if (result == EXPIRY_NONE) {
+            addReplyLongLong(c, -1);
+        } else {
+            result = result - basetime;
+            if (result < 0) result = 0;
+            addReplyLongLong(c, unit == UNIT_MILLISECONDS ? result : ((result + 500) / 1000));
+        }
+    }
+}
+
+void zttlCommand(client *c) {
+    zttlGenericCommand(c, commandTimeSnapshot(), UNIT_SECONDS);
+}
+
+void zpttlCommand(client *c) {
+    zttlGenericCommand(c, commandTimeSnapshot(), UNIT_MILLISECONDS);
+}
+
+void zexpiretimeCommand(client *c) {
+    zttlGenericCommand(c, 0, UNIT_SECONDS);
+}
+
+void zpexpiretimeCommand(client *c) {
+    zttlGenericCommand(c, 0, UNIT_MILLISECONDS);
 }

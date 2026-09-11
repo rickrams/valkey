@@ -181,15 +181,20 @@ robj *lookupKeyWriteOrReply(client *c, robj *key, robj *reply) {
     return o;
 }
 
-/* For hash keys, checks if they contain volatile items and updates tracking accordingly.
- * Always accesses the tracking kvstore, even if the tracking state doesn't change. */
+/* For hash and sorted set keys, checks if they contain volatile items (fields
+ * or members carrying a TTL) and updates tracking accordingly. Always accesses
+ * the tracking kvstore, even if the tracking state doesn't change. */
 void dbUpdateObjectWithVolatileItemsTracking(serverDb *db, robj *o) {
-    if (objectGetType(o) == OBJ_HASH) {
-        if (hashTypeHasVolatileFields(o)) {
-            dbTrackKeyWithVolatileItems(db, o);
-        } else {
-            dbUntrackKeyWithVolatileItems(db, o);
-        }
+    bool has_volatile;
+    switch (objectGetType(o)) {
+    case OBJ_HASH: has_volatile = hashTypeHasVolatileFields(o); break;
+    case OBJ_ZSET: has_volatile = zsetTypeHasVolatileMembers(o); break;
+    default: return;
+    }
+    if (has_volatile) {
+        dbTrackKeyWithVolatileItems(db, o);
+    } else {
+        dbUntrackKeyWithVolatileItems(db, o);
     }
 }
 
@@ -546,7 +551,13 @@ int dbGenericDelete(serverDb *db, robj *key, int async, int flags) {
 /* Add a key with volatile items to the tracking kvstore. */
 void dbTrackKeyWithVolatileItems(serverDb *db, robj *o) {
     serverAssert(objectGetKey(o));
-    if (objectGetType(o) == OBJ_HASH && hashTypeHasVolatileFields(o)) {
+    bool has_volatile;
+    switch (objectGetType(o)) {
+    case OBJ_HASH: has_volatile = hashTypeHasVolatileFields(o); break;
+    case OBJ_ZSET: has_volatile = zsetTypeHasVolatileMembers(o); break;
+    default: return;
+    }
+    if (has_volatile) {
         int dict_index = getKVStoreIndexForKey(objectGetKey(o));
         kvstoreHashtableAdd(db->keys_with_volatile_items, dict_index, o);
     }
@@ -2091,16 +2102,16 @@ void propagateDeletion(serverDb *db, robj *key, int lazy, int slot) {
  * for the given hash object `o`. It temporarily enables replication (if needed),
  * constructs the command using the field names, and sends it via alsoPropagate().
  * Returns how many fields where propagated */
-int propagateFieldsDeletion(serverDb *db, robj *o, size_t n_fields, robj *fields[], int didx) {
+int propagateFieldsDeletion(serverDb *db, robj *o, robj *delcmd, size_t n_fields, robj *fields[], int didx) {
     int prev_replication_allowed = server.replication_allowed;
     server.replication_allowed = 1;
 
-    robj *argv[EXPIRE_BULK_LIMIT + 2]; /* HDEL + key + fields */
+    robj *argv[EXPIRE_BULK_LIMIT + 2]; /* delcmd + key + fields */
     if (n_fields > EXPIRE_BULK_LIMIT) n_fields = EXPIRE_BULK_LIMIT;
 
     int argc = 0;
     robj *keyobj = createStringObjectFromSds(objectGetKey(o));
-    argv[argc++] = shared.hdel; // HDEL command
+    argv[argc++] = delcmd;      // HDEL (hash) or ZREM (sorted set)
     argv[argc++] = keyobj;      // key name
     for (size_t i = 0; i < n_fields; i++) {
         // field to delete
@@ -2129,34 +2140,44 @@ size_t dbReclaimExpiredFields(robj *o, serverDb *db, mstime_t now, unsigned long
     size_t total_expired = 0;
     bool deleteKey = false;
 
+    /* Per-type glue: hash fields (HDEL) vs sorted set members (ZREM). Both
+     * store their volatile items in db->keys_with_volatile_items and share
+     * this reaping/propagation machinery. */
+    int is_hash = (objectGetType(o) == OBJ_HASH);
+    robj *delcmd = is_hash ? shared.hdel : shared.zrem;
+    char *expired_event = is_hash ? "hexpired" : "zexpired";
+
     while (max_entries > 0) {
         /* Process in batches to avoid large stack allocations. */
         unsigned long batch_size = max_entries > EXPIRE_BULK_LIMIT ? EXPIRE_BULK_LIMIT : max_entries;
         robj *entries[EXPIRE_BULK_LIMIT];
-        size_t expired = hashTypeDeleteExpiredFields(o, now, batch_size, entries);
+        size_t expired = is_hash ? hashTypeDeleteExpiredFields(o, now, batch_size, entries)
+                                 : zsetTypeDeleteExpiredMembers(o, now, batch_size, entries);
         if (expired == 0) break;
 
-        /* Clean up volatile set if no more volatile fields remain */
-        if (!hashTypeHasVolatileFields(o)) {
+        bool has_volatile = is_hash ? hashTypeHasVolatileFields(o) : zsetTypeHasVolatileMembers(o);
+        /* Clean up volatile tracking if no more volatile items remain */
+        if (!has_volatile) {
             dbUntrackKeyWithVolatileItems(db, o);
         }
 
-        /* Check if key is now empty after removing expired fields */
-        deleteKey = hashTypeLength(o) == 0;
+        /* Check if key is now empty after removing expired items */
+        size_t remaining = is_hash ? hashTypeLength(o) : zsetLength(o);
+        deleteKey = remaining == 0;
 
         enterExecutionUnit(1, 0);
         robj *keyobj = createStringObjectFromSds(objectGetKey(o));
         /* Note that even though if might have been more efficient to only propagate del in case the key has no more items left,
-         * we must keep consistency in order to allow the replica to report hdel notifications before del. */
-        propagateFieldsDeletion(db, o, expired, entries, didx);
-        notifyKeyspaceEvent(NOTIFY_EXPIRED, "hexpired", keyobj, db->id);
+         * we must keep consistency in order to allow the replica to report hdel/zrem notifications before del. */
+        propagateFieldsDeletion(db, o, delcmd, expired, entries, didx);
+        notifyKeyspaceEvent(NOTIFY_EXPIRED, expired_event, keyobj, db->id);
         if (deleteKey) {
             dbDelete(db, keyobj);
             propagateDeletion(db, keyobj, server.lazyfree_lazy_expire, didx);
             notifyKeyspaceEvent(NOTIFY_GENERIC, "del", keyobj, db->id);
             server.dirty++;
         } else {
-            if (!hashTypeHasVolatileFields(o)) dbUntrackKeyWithVolatileItems(db, o);
+            if (!has_volatile) dbUntrackKeyWithVolatileItems(db, o);
             server.dirty += (long long)expired;
         }
         signalModifiedKey(NULL, db, keyobj);
