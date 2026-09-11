@@ -332,3 +332,108 @@ start_server {tags {"zsetexpire needs:debug external:skip"} overrides {save ""}}
     }
     r config set zset-max-listpack-entries 128
 }
+
+start_server {tags {"zsetexpire external:skip"}} {
+    start_server {tags {"needs:repl external:skip"}} {
+        set primary [srv -1 client]
+        set primary_host [srv -1 host]
+        set primary_port [srv -1 port]
+        set replica [srv 0 client]
+
+        $replica replicaof $primary_host $primary_port
+        wait_for_condition 50 100 {
+            [lindex [$replica role] 0] eq {slave} &&
+            [string match {*master_link_status:up*} [$replica info replication]]
+        } else {
+            fail "Can't turn the instance into a replica"
+        }
+
+        foreach {enc entries} {listpack 128 btree 0} {
+            test "Full sync carries member TTLs ($enc)" {
+                $primary flushall
+                # Encoding is chosen per-server by local config (not replicated),
+                # so set the threshold on both to compare encodings.
+                $primary config set zset-max-listpack-entries $entries
+                $replica config set zset-max-listpack-entries $entries
+                set e2 [expr {[clock milliseconds] + 50000}]
+                set e3 [expr {[clock milliseconds] + 70000}]
+                $primary zadd z 1 a 2 b 3 c
+                $primary zpexpireat z $e2 MEMBERS 1 b
+                $primary zpexpireat z $e3 MEMBERS 1 c
+                assert_equal $enc [$primary object encoding z]
+                wait_for_ofs_sync $primary $replica
+                assert_equal $enc [$replica object encoding z]
+                assert_equal [list $e2] [$replica zpexpiretime z MEMBERS 1 b]
+                assert_equal [list $e3] [$replica zpexpiretime z MEMBERS 1 c]
+                assert_equal {-1} [$replica zttl z MEMBERS 1 a]
+            }
+        }
+
+        test "ZEXPIRE/ZEXPIREAT propagate an absolute expiry consistently" {
+            $primary flushall
+            set future [expr {[clock milliseconds] + 5000}]
+            $primary zadd z 1 a 2 b 3 c
+            $primary zpexpireat z $future MEMBERS 1 a
+            $primary zexpire z 5 MEMBERS 1 b
+            $primary zexpireat z [expr {([clock milliseconds] + 5000) / 1000}] MEMBERS 1 c
+            wait_for_ofs_sync $primary $replica
+            foreach m {a b c} {
+                assert_equal [$primary zpexpiretime z MEMBERS 1 $m] [$replica zpexpiretime z MEMBERS 1 $m]
+            }
+        }
+
+        test "Member expired on primary is removed on replica (active)" {
+            $primary flushall
+            $primary zadd z 1 a 2 keep
+            $primary zpexpire z 50 MEMBERS 1 a
+            wait_for_ofs_sync $primary $replica
+            # Wait for the primary's active-expire cycle to physically reap 'a'
+            # (zcard is eventually-consistent, so it drops only after reaping,
+            # not on lazy hiding), which propagates a ZREM to the replica.
+            wait_for_condition 100 50 {
+                [$primary zcard z] == 1
+            } else {
+                fail "primary did not actively reap the expired member"
+            }
+            wait_for_ofs_sync $primary $replica
+            assert_equal {keep} [$replica zrange z 0 -1]
+            assert_equal {} [$replica zscore z a]
+        }
+
+        test "ZEXPIRE with past time propagates member deletion to replica" {
+            $primary flushall
+            $primary zadd z 1 a 2 b
+            assert_equal {2} [$primary zexpire z 0 MEMBERS 1 a]
+            wait_for_ofs_sync $primary $replica
+            assert_equal {} [$replica zscore z a]
+            assert_equal 2 [$replica zscore z b]
+        }
+
+        test "Replica retains member and TTL before expiration" {
+            $primary flushall
+            $primary zadd z 1 a
+            $primary zpexpire z 60000 MEMBERS 1 a
+            wait_for_ofs_sync $primary $replica
+            set rttl [lindex [$replica zpttl z MEMBERS 1 a] 0]
+            assert {$rttl > 0}
+            assert {$rttl <= 60000}
+        }
+
+        test "Last member expiry deletes the key on replica" {
+            $primary flushall
+            $primary zadd z 1 only
+            $primary zpexpire z 50 MEMBERS 1 only
+            wait_for_condition 100 50 {
+                [$primary exists z] == 0
+            } else {
+                fail "key not deleted on primary"
+            }
+            wait_for_ofs_sync $primary $replica
+            wait_for_condition 100 50 {
+                [$replica exists z] == 0
+            } else {
+                fail "key not deleted on replica"
+            }
+        }
+    }
+}
