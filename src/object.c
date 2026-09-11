@@ -1389,7 +1389,8 @@ size_t objectComputeSize(robj *key, robj *o, size_t sample_size, int dbid) {
             hashtableInitIterator(&iter, zs->ht, 0);
             void *next;
 
-            asize += sizeof(zset) + orderedIndexEstimateStructureMemory(zs->oi) + hashtableMemUsage(zs->ht);
+            asize += sizeof(zset) + orderedIndexEstimateStructureMemory(zs->oi) + hashtableMemUsage(zs->ht) +
+                     zsetNodeExpiresMemUsage(zs);
             /* The hashtable entries are the packed items shared with the
              * ordered index, so sampling them covers the member payloads. */
             while (hashtableNext(&iter, &next) && samples < sample_size) {

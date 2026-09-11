@@ -860,6 +860,13 @@ static void zsetNodeExpireDefragCallback(void *privdata, void *entry_ref) {
     if (newentry) *ref = newentry;
 }
 
+/* Estimated memory used by the btree TTL side map (bucket tables plus the
+ * per-member entry structs). Zero when no member carries a TTL. */
+size_t zsetNodeExpiresMemUsage(zset *zs) {
+    if (zs->node_expires == NULL) return 0;
+    return hashtableMemUsage(zs->node_expires) + hashtableSize(zs->node_expires) * sizeof(zsetNodeExpire);
+}
+
 /* Defrag the node_expires side map's own allocations (bucket tables and entry
  * structs). Single pass — the map only holds members carrying a TTL. */
 void zsetDefragNodeExpires(zset *zs, void *(*defragfn)(void *)) {

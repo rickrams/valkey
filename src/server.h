@@ -3560,6 +3560,7 @@ mstime_t zsetNodeGetExpiry(zset *zs, OrderedIndexItem *node);
 void zsetNodeSetExpiry(zset *zs, OrderedIndexItem *node, mstime_t expiry);
 void zsetNodeMigrateExpiry(zset *zs, OrderedIndexItem *old_node, OrderedIndexItem *new_node);
 void zsetDefragNodeExpires(zset *zs, void *(*defragfn)(void *));
+size_t zsetNodeExpiresMemUsage(zset *zs);
 robj *zsetDup(robj *o);
 void genericZpopCommand(client *c,
                         robj **keyv,
