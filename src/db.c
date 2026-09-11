@@ -2119,8 +2119,8 @@ int propagateFieldsDeletion(serverDb *db, robj *o, robj *delcmd, size_t n_fields
 
     int argc = 0;
     robj *keyobj = createStringObjectFromSds(objectGetKey(o));
-    argv[argc++] = delcmd;      // HDEL (hash) or ZREM (sorted set)
-    argv[argc++] = keyobj;      // key name
+    argv[argc++] = delcmd; // HDEL (hash) or ZREM (sorted set)
+    argv[argc++] = keyobj; // key name
     for (size_t i = 0; i < n_fields; i++) {
         // field to delete
         argv[argc++] = fields[i];
