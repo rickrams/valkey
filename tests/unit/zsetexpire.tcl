@@ -210,27 +210,11 @@ proc test_zset_ttl {encoding} {
         assert_equal PONG [r ping]
     }
 
-    test "RDB round-trip preserves member TTLs ($encoding)" {
-        r del z
-        r zadd z 1 a 2 b 3 c
-        r zexpire z 100000 MEMBERS 1 b
-        r zpexpireat z 99999999999999 MEMBERS 1 c
-        assert_encoding $encoding z
-        r debug reload
-        assert_encoding $encoding z
-        assert_equal 3 [r zcard z]
-        assert_equal {-1} [r zttl z MEMBERS 1 a]
-        assert_range [lindex [r zttl z MEMBERS 1 b] 0] 99000 100000
-        assert_equal {99999999999999} [r zpexpiretime z MEMBERS 1 c]
-        # Tracking re-established so active expiry still works after reload.
-        assert_equal 1 [get_keys_with_volatile_items r]
-    }
-
     r config set zset-max-listpack-entries 128
     r config set zset-max-listpack-value 64
 }
 
-start_server {tags {"zsetexpire"}} {
+start_server {tags {"zsetexpire external:skip"}} {
     foreach encoding {listpack btree} {
         test_zset_ttl $encoding
     }
@@ -325,4 +309,26 @@ start_server {tags {"zsetexpire"}} {
 
         $rd close
     }
+}
+
+start_server {tags {"zsetexpire needs:debug external:skip"} overrides {save ""}} {
+    foreach {enc entries} {listpack 128 btree 0} {
+        test "RDB round-trip preserves member TTLs ($enc)" {
+            r config set zset-max-listpack-entries $entries
+            r del z
+            r zadd z 1 a 2 b 3 c
+            r zexpire z 100000 MEMBERS 1 b
+            r zpexpireat z 99999999999999 MEMBERS 1 c
+            assert_encoding $enc z
+            r debug reload
+            assert_encoding $enc z
+            assert_equal 3 [r zcard z]
+            assert_equal {-1} [r zttl z MEMBERS 1 a]
+            assert_range [lindex [r zttl z MEMBERS 1 b] 0] 99000 100000
+            assert_equal {99999999999999} [r zpexpiretime z MEMBERS 1 c]
+            # Tracking re-established so active expiry still works after reload.
+            assert_equal 1 [get_keys_with_volatile_items r]
+        }
+    }
+    r config set zset-max-listpack-entries 128
 }
