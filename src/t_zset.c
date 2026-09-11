@@ -3047,6 +3047,11 @@ void genericZrangebyscoreCommand(zrange_result_handler *handler,
         return;
     }
 
+    /* When the set has members carrying a TTL, expired-but-unreaped members
+     * are hidden: they are treated as absent, so they consume neither offset
+     * nor limit. TTL-free sets skip the per-member check entirely. */
+    int need_filter = zsetTypeHasVolatileMembers(zobj);
+
     if (zobj->encoding == OBJ_ENCODING_LISTPACK) {
         unsigned char *zl = objectGetVal(zobj);
         unsigned char *eptr, *sptr;
@@ -3064,17 +3069,7 @@ void genericZrangebyscoreCommand(zrange_result_handler *handler,
         /* Get score pointer for the first element. */
         if (eptr) sptr = lpNext(zl, eptr);
 
-        /* If there is an offset, just traverse the number of elements without
-         * checking the score because that is done in the next loop. */
-        while (eptr && offset--) {
-            if (reverse) {
-                zzlPrev(zl, &eptr, &sptr);
-            } else {
-                zzlNext(zl, &eptr, &sptr);
-            }
-        }
-
-        while (eptr && limit--) {
+        while (eptr && limit != 0) {
             double score = zzlGetScore(sptr);
 
             /* Abort when the node is no longer in range. */
@@ -3084,12 +3079,20 @@ void genericZrangebyscoreCommand(zrange_result_handler *handler,
                 if (!zsetScoreLteMax(score, range)) break;
             }
 
-            vstr = lpGetValue(eptr, &vlen, &vlong);
-            rangelen++;
-            if (vstr == NULL) {
-                handler->emitResultFromLongLong(handler, vlong, score);
+            /* Skip expired-but-unreaped members and offset members. */
+            if (need_filter && !zsetExpiryIsVisible(zzlGetExpiry(zl, sptr))) {
+                /* hidden: does not count toward offset or limit */
+            } else if (offset > 0) {
+                offset--;
             } else {
-                handler->emitResultFromCBuffer(handler, vstr, vlen, score);
+                vstr = lpGetValue(eptr, &vlen, &vlong);
+                rangelen++;
+                if (vstr == NULL) {
+                    handler->emitResultFromLongLong(handler, vlong, score);
+                } else {
+                    handler->emitResultFromCBuffer(handler, vstr, vlen, score);
+                }
+                if (limit > 0) limit--;
             }
 
             /* Move to next node */
@@ -3106,10 +3109,13 @@ void genericZrangebyscoreCommand(zrange_result_handler *handler,
         OrderedIndexIterator iter;
         orderedIndexInitIterator(&iter, oi);
 
-        /* Seek to position within score range */
-        orderedIndexSeekToScoreRange(&iter, range->min, range->max, range->minex, range->maxex, reverse ? -offset - 1 : offset);
+        /* Seek to position within score range. When filtering, seek to the
+         * range boundary (offset 0) and apply the offset manually over visible
+         * members; otherwise use the efficient offset seek. */
+        orderedIndexSeekToScoreRange(&iter, range->min, range->max, range->minex, range->maxex,
+                                     need_filter ? (reverse ? -1 : 0) : (reverse ? -offset - 1 : offset));
 
-        while (limit--) {
+        while (limit != 0) {
             ln = reverse ? orderedIndexPrev(&iter) : orderedIndexNext(&iter);
             if (ln == NULL) break;
             /* Abort when the node is no longer in range. */
@@ -3119,11 +3125,20 @@ void genericZrangebyscoreCommand(zrange_result_handler *handler,
                 if (!zsetScoreLteMax(orderedIndexItemGetScore(ln), range)) break;
             }
 
+            if (need_filter && !zsetExpiryIsVisible(zsetNodeGetExpiry(zs, ln))) {
+                continue; /* hidden: consumes neither offset nor limit */
+            }
+            if (need_filter && offset > 0) {
+                offset--;
+                continue;
+            }
+
             rangelen++;
             const char *ele_ptr;
             size_t ele_len;
             orderedIndexItemGetElement(ln, &ele_ptr, &ele_len);
             handler->emitResultFromCBuffer(handler, ele_ptr, ele_len, orderedIndexItemGetScore(ln));
+            if (limit > 0) limit--;
         }
     } else {
         serverPanic("Unknown sorted set encoding");
@@ -3275,6 +3290,9 @@ void genericZrangebylexCommand(zrange_result_handler *handler,
 
     handler->beginResultEmission(handler, -1);
 
+    /* Hide expired-but-unreaped members: they consume neither offset nor limit. */
+    int need_filter = zsetTypeHasVolatileMembers(zobj);
+
     if (zobj->encoding == OBJ_ENCODING_LISTPACK) {
         unsigned char *zl = objectGetVal(zobj);
         unsigned char *eptr, *sptr;
@@ -3292,21 +3310,7 @@ void genericZrangebylexCommand(zrange_result_handler *handler,
         /* Get score pointer for the first element. */
         if (eptr) sptr = lpNext(zl, eptr);
 
-        /* If there is an offset, just traverse the number of elements without
-         * checking the score because that is done in the next loop. */
-        while (eptr && offset--) {
-            if (reverse) {
-                zzlPrev(zl, &eptr, &sptr);
-            } else {
-                zzlNext(zl, &eptr, &sptr);
-            }
-        }
-
-        while (eptr && limit--) {
-            double score = 0;
-            if (withscores) /* don't bother to extract the score if it's gonna be ignored. */
-                score = zzlGetScore(sptr);
-
+        while (eptr && limit != 0) {
             /* Abort when the node is no longer in range. */
             if (reverse) {
                 if (!zzlLexValueGteMin(eptr, range)) break;
@@ -3314,12 +3318,22 @@ void genericZrangebylexCommand(zrange_result_handler *handler,
                 if (!zzlLexValueLteMax(eptr, range)) break;
             }
 
-            vstr = lpGetValue(eptr, &vlen, &vlong);
-            rangelen++;
-            if (vstr == NULL) {
-                handler->emitResultFromLongLong(handler, vlong, score);
+            if (need_filter && !zsetExpiryIsVisible(zzlGetExpiry(zl, sptr))) {
+                /* hidden */
+            } else if (offset > 0) {
+                offset--;
             } else {
-                handler->emitResultFromCBuffer(handler, vstr, vlen, score);
+                double score = 0;
+                if (withscores) /* don't bother to extract the score if it's gonna be ignored. */
+                    score = zzlGetScore(sptr);
+                vstr = lpGetValue(eptr, &vlen, &vlong);
+                rangelen++;
+                if (vstr == NULL) {
+                    handler->emitResultFromLongLong(handler, vlong, score);
+                } else {
+                    handler->emitResultFromCBuffer(handler, vstr, vlen, score);
+                }
+                if (limit > 0) limit--;
             }
 
             /* Move to next node */
@@ -3336,10 +3350,11 @@ void genericZrangebylexCommand(zrange_result_handler *handler,
         OrderedIndexIterator iter;
         orderedIndexInitIterator(&iter, oi);
 
-        /* Seek to position within lex range */
-        orderedIndexSeekToLexRange(&iter, range->min, range->max, range->minex, range->maxex, reverse ? -offset - 1 : offset);
+        /* Seek to position within lex range (manual offset when filtering). */
+        orderedIndexSeekToLexRange(&iter, range->min, range->max, range->minex, range->maxex,
+                                   need_filter ? (reverse ? -1 : 0) : (reverse ? -offset - 1 : offset));
 
-        while (limit--) {
+        while (limit != 0) {
             ln = reverse ? orderedIndexPrev(&iter) : orderedIndexNext(&iter);
             if (ln == NULL) break;
             /* Abort when the node is no longer in range. */
@@ -3352,8 +3367,15 @@ void genericZrangebylexCommand(zrange_result_handler *handler,
                 if (!zsetLexLteMax(ele_ptr, ele_len, range)) break;
             }
 
+            if (need_filter && !zsetExpiryIsVisible(zsetNodeGetExpiry(zs, ln))) continue;
+            if (need_filter && offset > 0) {
+                offset--;
+                continue;
+            }
+
             rangelen++;
             handler->emitResultFromCBuffer(handler, ele_ptr, ele_len, orderedIndexItemGetScore(ln));
+            if (limit > 0) limit--;
         }
     } else {
         serverPanic("Unknown sorted set encoding");
